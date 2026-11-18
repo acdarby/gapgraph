@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gapgraph editor</title>
+<style>
+:root{
+  --bg:#f6f7f9; --panel:#ffffff; --ink:#1d2330; --muted:#6b7385; --line:#dde1e8; --hi:#eef2ff;
+  --accent:#3b5bdb; --ok:#2b8a3e; --warn:#e67700; --bad:#c92a2a;
+  --ev-graph:#868e96; --ev-longread:#1c7ed6; --ev-softclip:#e8590c; --ev-hic:#9c36b5; --ev-path:#0ca678;
+  --clip-bg:#fff0e0; --clip-ink:#c25400; --mm:#d6336c; --ins:#7048e8;
+  --p-illumina:#f1f3f5; --p-hifi:#ebfbee; --p-ont:#e7f5ff; --p-clr:#fff9db;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#12151b; --panel:#1a1e26; --ink:#e3e7ee; --muted:#8b93a5; --line:#2c323d; --hi:#232a3a;
+  --accent:#748ffc; --clip-bg:#3a2612; --clip-ink:#ffa94d; --mm:#f06595; --ins:#9775fa;
+  --p-illumina:#1f232b; --p-hifi:#18271d; --p-ont:#16222f; --p-clr:#2a2716;
+}}
+:root[data-theme="dark"]{
+  --bg:#12151b; --panel:#1a1e26; --ink:#e3e7ee; --muted:#8b93a5; --line:#2c323d; --hi:#232a3a;
+  --accent:#748ffc; --clip-bg:#3a2612; --clip-ink:#ffa94d; --mm:#f06595; --ins:#9775fa;
+  --p-illumina:#1f232b; --p-hifi:#18271d; --p-ont:#16222f; --p-clr:#2a2716;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.4 system-ui,-apple-system,Segoe UI,sans-serif}
+button{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+input,select{font:inherit;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:3px 6px}
+#app{display:grid;grid-template-columns:330px 1fr 320px;grid-template-rows:44px 1fr;height:100vh}
+header{grid-column:1/4;display:flex;align-items:center;gap:10px;padding:0 12px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font-size:15px;margin:0 8px 0 0} header .sp{flex:1}
+.layer{display:flex;align-items:center;gap:4px;color:var(--muted)} .sw{width:14px;height:3px;display:inline-block;border-radius:2px}
+aside{overflow:hidden;display:flex;flex-direction:column;background:var(--panel);border-right:1px solid var(--line)}
+#right{border-right:0;border-left:1px solid var(--line)}
+.tabs{display:flex;border-bottom:1px solid var(--line)} .tabs button{border:0;border-radius:0;flex:1;padding:8px 0;background:none;color:var(--muted)}
+.tabs button.on{color:var(--ink);box-shadow:inset 0 -2px var(--accent)}
+.list{overflow:auto;flex:1}
+.item{padding:7px 10px;border-bottom:1px solid var(--line);cursor:pointer}
+.item:hover{background:var(--hi)} .item.sel{background:var(--hi);box-shadow:inset 3px 0 var(--accent)}
+.item .t{font-family:var(--mono);font-size:12px;display:flex;justify-content:space-between}
+.chips{display:flex;gap:4px;flex-wrap:wrap;margin-top:3px}
+.chip{font-size:11px;padding:0 6px;border-radius:9px;border:1px solid var(--line);color:var(--muted)}
+.chip.ev{color:#fff;border:0}
+.chip.flag{border-color:var(--warn);color:var(--warn)}
+.filters{padding:6px 10px;display:flex;gap:6px;border-bottom:1px solid var(--line);align-items:center}
+main{display:grid;grid-template-rows:42% 1fr;min-width:0;min-height:0}
+#graphwrap{position:relative;border-bottom:1px solid var(--line);min-height:0}
+canvas{display:block}
+#tip{position:absolute;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;display:none;white-space:nowrap;box-shadow:0 2px 8px #0002}
+#editors{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.ed{flex:1;display:flex;flex-direction:column;min-height:0;border-bottom:1px solid var(--line)}
+.edbar{display:flex;gap:6px;align-items:center;padding:4px 8px;background:var(--panel);border-bottom:1px solid var(--line);font-size:12px}
+.edbar b{font-family:var(--mono);white-space:nowrap} .edbar button,.edbar label,.lbl{white-space:nowrap} .lbl{overflow:hidden;text-overflow:ellipsis;min-width:0} .edbar .sp{flex:1}
+.edcv{flex:1;min-height:0;position:relative}
+.card{padding:10px 12px;border-bottom:1px solid var(--line)}
+.card h3{margin:0 0 6px;font-size:13px}
+table.kv{width:100%;border-collapse:collapse;font-size:12px} table.kv td{padding:2px 0} table.kv td:last-child{text-align:right;font-family:var(--mono)}
+.muted{color:var(--muted)} .row{display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:6px 14px;border-radius:6px;display:none}
+pre.seq{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:break-all;max-height:90px;overflow:auto;background:var(--bg);padding:6px;border-radius:4px;margin:4px 0}
+@media (max-width:900px){#app{grid-template-columns:1fr;grid-template-rows:44px 260px 1fr 320px}header{grid-column:1}aside,#right{border:0}}
+</style>
+</head>
+<body>
+<div id="app">
+<header>
+  <h1>gapgraph</h1><span class="muted" id="stats"></span>
+  <span class="sp"></span>
+  <span class="layer"><input type="checkbox" data-l="graph" checked><span class="sw" style="background:var(--ev-graph)"></span>graph</span>
+  <span class="layer"><input type="checkbox" data-l="longread" checked><span class="sw" style="background:var(--ev-longread)"></span>long reads</span>
+  <span class="layer"><input type="checkbox" data-l="softclip" checked><span class="sw" style="background:var(--ev-softclip)"></span>soft-clips</span>
+  <span class="layer"><input type="checkbox" data-l="hic" checked><span class="sw" style="background:var(--ev-hic)"></span>Hi-C</span>
+  <span class="layer"><input type="checkbox" data-l="path" checked><span class="sw" style="background:var(--ev-path)"></span>paths</span>
+  <button id="bAuto" title="accept best unambiguous joins">Auto-scaffold</button>
+  <button id="bUndo" title="u">Undo</button>
+  <button id="bExport" class="primary">Export FASTA+AGP</button>
+</header>
+<aside id="left">
+  <div class="tabs" id="tabs">
+    <button data-t="joins" class="on">Joins</button><button data-t="breaks">Breaks</button>
+    <button data-t="paths">Paths</button><button data-t="scaffolds">Scaffolds</button><button data-t="log">Log</button>
+  </div>
+  <div class="filters" id="filters">
+    <input id="q" placeholder="filter contig…" style="flex:1">
+    <label class="muted"><input type="checkbox" id="hideDone" checked> open only</label>
+  </div>
+  <div class="list" id="list"></div>
+</aside>
+<main>
+  <div id="graphwrap"><canvas id="gcv"></canvas><div id="tip"></div></div>
+  <div id="editors"></div>
+</main>
+<aside id="right">
+  <div id="detail" class="list" style="flex:none;max-height:60%"><div class="card muted">Select a join, a break, or click a contig in the graph.<br><br>
+  Keys: <b>j</b>/<b>k</b> next/prev join · <b>a</b> accept · <b>x</b> reject · <b>u</b> undo · <b>←/→</b> scroll editor · <b>[</b>/<b>]</b> jump to contig ends</div></div>
+  <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0"><h3>Hi-C contacts <span class="muted" style="font-weight:normal">(scaffold order)</span></h3>
+    <div style="flex:1;min-height:0;position:relative"><canvas id="hcv"></canvas></div></div>
+</aside>
+</div>
+<div id="toast"></div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const EV={graph:'--ev-graph',longread:'--ev-longread',softclip:'--ev-softclip',hic:'--ev-hic',path:'--ev-path'};
+let S=null, tab='joins', sel=null, rejected=new Set(), layers={graph:1,longread:1,softclip:1,hic:1,path:1};
+const api=(u,b)=>fetch(u,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{}).then(r=>r.json());
+function toast(m,bad){const t=$('#toast');t.textContent=m;t.style.background=bad?css('--bad'):'';t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',2600)}
+const fmt=n=>n>=1e6?(n/1e6).toFixed(2)+' Mb':n>=1e3?(n/1e3).toFixed(1)+' kb':n+' bp';
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// ------------------------------------------------------------------ state
+async function load(keepLayout){
+  S=await api('/api/overview');
+  S.segIdx={}; S.graph.segments.forEach((s,i)=>S.segIdx[s.name]=i);
+  // which original ends are already joined in a scaffold?
+  S.joinedEnds=new Set();
+  for(const sc of S.scaffolds){sc.parts.forEach((p,i)=>{const pc=S.pieces[p.piece];const src=pc.src;
+    const first=i===0,last=i===sc.parts.length-1;
+    const leftEnd=p.orient==='+'?'L':'R', rightEnd=p.orient==='+'?'R':'L';
+    if(!first) S.joinedEnds.add(src+':'+leftEnd); if(!last) S.joinedEnds.add(src+':'+rightEnd);});}
+  $('#stats').textContent=`${S.graph.segments.length} contigs · ${S.scaffolds.length} scaffolds · ${S.candidates.length} candidate joins · ${S.hotspots.length} break hotspots · ${S.platforms.join('/')||'no reads'}${S.has_hic?' + Hi-C':''}`;
+  if(!keepLayout) G.init(); else G.draw();
+  renderList(); drawHiC();
+}
+const isDone=c=>S.joinedEnds.has(c.a.join(':'))&&S.joinedEnds.has(c.b.join(':'));
+
+// ------------------------------------------------------------------ left list
+function renderList(){
+  const q=$('#q').value.trim(), hide=$('#hideDone').checked, L=$('#list');
+  $('#filters').style.display=(tab==='log'||tab==='scaffolds')?'none':'flex';
+  let h='';
+  if(tab==='joins'){
+    S.candidates.filter(c=>(!q||c.id.includes(q))&&(!hide||(!isDone(c)&&!rejected.has(c.id)))).forEach(c=>{
+      h+=`<div class="item ${sel&&sel.id===c.id?'sel':''}" data-c="${esc(c.id)}"><div class="t"><span>${esc(c.a.join(':'))} ⟷ ${esc(c.b.join(':'))}</span><span>${c.score}</span></div>
+      <div class="chips">${c.evidence.map(e=>`<span class="chip ev" style="background:${css(EV[e])}">${e}</span>`).join('')}
+      ${c.flags.map(f=>`<span class="chip flag">${esc(f)}</span>`).join('')}${isDone(c)?'<span class="chip" style="color:var(--ok)">joined</span>':''}</div></div>`});
+  } else if(tab==='breaks'){
+    S.hotspots.filter(b=>!q||b.contig.includes(q)).forEach((b,i)=>{
+      h+=`<div class="item" data-b="${i}"><div class="t"><span>${esc(b.contig)}:${b.pos}</span><span>${b.reads} reads</span></div>
+      <div class="chips"><span class="chip">${b.platform}</span><span class="chip">clip ${b.clip_side}</span><span class="chip">cov ${b.mean_cov}×</span></div></div>`});
+    if(!h) h='<div class="card muted">No internal soft-clip hotspots.</div>';
+  } else if(tab==='paths'){
+    S.paths.filter(p=>!q||p.path.join().includes(q)).forEach((p,i)=>{
+      h+=`<div class="item" data-p="${i}"><div class="t"><span>${esc(p.path.join(' → '))}</span><span>${p.reads}</span></div></div>`});
+    if(!h) h='<div class="card muted">No long reads spanning ≥3 contigs.</div>';
+  } else if(tab==='scaffolds'){
+    S.scaffolds.forEach(sc=>{
+      h+=`<div class="item"><div class="t"><span>${esc(sc.name)}</span><span>${sc.parts.length} parts</span></div>
+      <div class="chips" style="font-family:var(--mono)">${sc.parts.map((p,i)=>`<span class="chip">${esc(p.piece)}${p.orient}</span>${i<sc.parts.length-1?`<span class="chip" title="break here" data-brk="${esc(sc.name)}|${i}" style="cursor:pointer">${p.gap>0?'N'+p.gap:p.gap<0?'ovl'+(-p.gap):'·'} ✂</span>`:''}`).join('')}</div>
+      <div class="row"><button data-flip="${esc(sc.name)}">Flip</button><button data-disc="${esc(sc.name)}">Discard</button></div></div>`});
+    if(S.discarded.length) h+=`<div class="card muted">Discarded: ${S.discarded.map(d=>esc(d.name)).join(', ')}</div>`;
+  } else {
+    h=S.log.slice().reverse().map(l=>`<div class="item"><div class="t"><span>${esc(l.op)}</span><span class="muted">${esc(l.t)}</span></div><div class="muted" style="font-family:var(--mono);font-size:11px">${esc(JSON.stringify(Object.fromEntries(Object.entries(l).filter(([k])=>k!=='t'&&k!=='op'))))}</div></div>`).join('')||'<div class="card muted">No edits yet.</div>';
+  }
+  L.innerHTML=h;
+}
+$('#tabs').onclick=e=>{const t=e.target.dataset.t;if(!t)return;tab=t;document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));renderList()};
+$('#q').oninput=renderList; $('#hideDone').onchange=renderList;
+$('#list').onclick=async e=>{
+  const it=e.target.closest('[data-c],[data-b],[data-p],[data-brk],[data-flip],[data-disc]'); if(!it)return;
+  const d=it.dataset;
+  if(d.c) selectCand(S.candidates.find(c=>c.id===d.c));
+  else if(d.b){const b=S.hotspots[+d.b];showBreak(b)}
+  else if(d.p){const p=S.paths[+d.p];G.highlight=p.path.map(s=>s.slice(0,-1));G.draw();}
+  else if(d.brk){const [s,i]=d.brk.split('|');doOp({op:'break',scaffold:s,after:+i})}
+  else if(d.flip) doOp({op:'flip',scaffold:d.flip});
+  else if(d.disc) doOp({op:'discard',scaffold:d.disc,reason:'manual'});
+};
+async function doOp(o){const r=await api('/api/op',o);if(!r.ok){toast(r.error,1);return false}toast(o.op+' done');await load(true);return true}
+
+// ------------------------------------------------------------------ detail panel
+function selectCand(c){
+  sel=c; G.sel=c; G.highlight=null; G.draw(); renderList();
+  const pl=o=>Object.entries(o||{}).map(([k,v])=>`${k} ${v}`).join(', ')||'–';
+  $('#detail').innerHTML=`<div class="card"><h3 style="font-family:var(--mono)">${esc(c.a.join(':'))} ⟷ ${esc(c.b.join(':'))}</h3>
+   <div class="chips">${c.flags.map(f=>`<span class="chip flag">${esc(f)}</span>`).join('')}</div>
+   <table class="kv">
+    <tr><td>score</td><td>${c.score}</td></tr>
+    <tr><td><span class="sw" style="background:${css('--ev-graph')}"></span> graph link</td><td>${c.graph_link?'yes, overlap '+c.graph_overlap:'no'}</td></tr>
+    <tr><td><span class="sw" style="background:${css('--ev-longread')}"></span> long-read bridges</td><td>${c.longread_reads} (gap ${c.longread_gap??'–'})</td></tr>
+    <tr><td class="muted">&nbsp;&nbsp;by platform</td><td>${pl(c.longread_platforms)}</td></tr>
+    <tr><td><span class="sw" style="background:${css('--ev-softclip')}"></span> soft-clip matches</td><td>${c.softclip_reads} (gap ${c.softclip_gap??'–'})</td></tr>
+    <tr><td class="muted">&nbsp;&nbsp;by platform</td><td>${pl(c.softclip_platforms)}</td></tr>
+    <tr><td><span class="sw" style="background:${css('--ev-hic')}"></span> Hi-C end contacts</td><td>${c.hic_contacts}</td></tr>
+    <tr><td class="muted">&nbsp;&nbsp;share · orientation</td><td>${c.hic_norm} · ${Math.round(c.hic_orient*100)}%</td></tr>
+    ${c.via.length?`<tr><td><span class="sw" style="background:${css('--ev-path')}"></span> through repeat</td><td>${esc(c.via.join(','))} (${c.via_reads} reads)</td></tr>`:''}
+   </table>
+   <div class="row">gap <input id="gapIn" type="number" value="${c.gap}" style="width:80px"> bp ${c.via.length?'<span class="muted">+ copy of '+esc(c.via.join(','))+'</span>':''}</div>
+   <div class="row"><button class="primary" id="bAcc">Accept join (a)</button><button id="bRej">Reject (x)</button></div>
+   <div class="muted" style="margin-top:6px;font-size:12px">Negative gap = overlap, trimmed from the second contig on export.</div></div>
+   <div class="card" id="endinfo"></div>`;
+  $('#bAcc').onclick=acceptSel; $('#bRej').onclick=rejectSel;
+  E.junction(c);
+  Promise.all([api(`/api/end?contig=${encodeURIComponent(c.a[0])}&side=${c.a[1]}`),api(`/api/end?contig=${encodeURIComponent(c.b[0])}&side=${c.b[1]}`)]).then(ds=>{
+    $('#endinfo').innerHTML='<h3>Soft-clip consensus beyond each end</h3>'+ds.map(d=>`<div class="muted">${esc(d.end.join(':'))}: ${d.n_clips} clipped reads, longest ${d.clip_lengths[0]||0} bp</div><pre class="seq">${esc(d.consensus.slice(0,600))||'—'}</pre>`).join('')+'<div class="muted" style="font-size:11px">Naive column consensus: reliable for HiFi/Illumina; indicative only for ONT/CLR.</div>';
+  });
+}
+async function acceptSel(){if(!sel)return;const ok=await doOp({op:'join',id:sel.id,gap:+$('#gapIn').value,reason:'manual'});if(ok)nextCand(1)}
+function rejectSel(){if(!sel)return;rejected.add(sel.id);toast('rejected '+sel.id);nextCand(1)}
+function nextCand(d){const open=S.candidates.filter(c=>!isDone(c)&&!rejected.has(c.id));if(!open.length)return;
+  let i=sel?open.findIndex(c=>c.id===sel.id):-1; i=i<0?0:(i+d+open.length)%open.length; selectCand(open[i]);}
+function showBreak(b){
+  sel=null; G.sel=null; G.highlight=[b.contig]; G.draw();
+  const piece=Object.entries(S.pieces).find(([n,p])=>p.src===b.contig&&p.start<b.pos&&b.pos<p.end&&!p.copy);
+  $('#detail').innerHTML=`<div class="card"><h3 style="font-family:var(--mono)">${esc(b.contig)}:${b.pos}</h3>
+   <table class="kv"><tr><td>reads clipping here</td><td>${b.reads}</td></tr><tr><td>clip side</td><td>${b.clip_side}</td></tr>
+   <tr><td>mean coverage</td><td>${b.mean_cov}×</td></tr><tr><td>platform</td><td>${b.platform}</td></tr></table>
+   <p class="muted">A pile of reads clipping at one column inside a contig is the signature of a mis-join or a collapsed-repeat boundary. Check the editor below, then split.</p>
+   ${piece?`<div class="row"><button class="primary" id="bSplit">Split ${esc(piece[0])} at ${b.pos}</button></div>`:'<div class="muted">Already split.</div>'}</div>`;
+  if(piece) $('#bSplit').onclick=()=>doOp({op:'split',piece:piece[0],pos:b.pos-piece[1].start,reason:`clip hotspot ${b.reads} reads`});
+  E.single(b.contig,b.pos);
+}
+$('#bAuto').onclick=async()=>{const r=await api('/api/op',{op:'auto'});if(r.ok){toast(`auto-joined ${r.result.joined.length}`);load(true)}else toast(r.error,1)};
+$('#bUndo').onclick=()=>doOp({op:'undo'});
+$('#bExport').onclick=async()=>{const r=await api('/api/export',{});toast(r.ok?'wrote '+r.files.join(', '):r.error,!r.ok)};
+document.querySelectorAll('[data-l]').forEach(cb=>cb.onchange=()=>{layers[cb.dataset.l]=cb.checked;G.draw()});
+
+// ------------------------------------------------------------------ graph view (Bandage-style, ends as nodes)
+const G={pts:[],sel:null,highlight:null,view:{x:0,y:0,k:1},
+  init(){
+    const segs=S.graph.segments, n=segs.length;
+    this.pts=[]; this.idx={};
+    const maxL=Math.max(...segs.map(s=>s.length));
+    segs.forEach((s,i)=>{const a=i/n*Math.PI*2, r=120+60*Math.random(), len=20+70*Math.sqrt(s.length/maxL);
+      for(const side of 'LR'){const o=side==='L'?-1:1;this.idx[s.name+':'+side]=this.pts.length;
+        this.pts.push({x:Math.cos(a)*r+o*len/2*Math.sin(a),y:Math.sin(a)*r-o*len/2*Math.cos(a),vx:0,vy:0,seg:s,side,len})}});
+    this.springs=[];
+    segs.forEach(s=>this.springs.push([this.idx[s.name+':L'],this.idx[s.name+':R'],this.pts[this.idx[s.name+':L']].len,0.25]));
+    S.graph.links.forEach(l=>this.springs.push([this.idx[l.a.join(':')],this.idx[l.b.join(':')],18,0.15]));
+    S.candidates.filter(c=>c.score>=6&&!c.graph_link).forEach(c=>this.springs.push([this.idx[c.a.join(':')],this.idx[c.b.join(':')],40,0.03]));
+    for(let it=0;it<500;it++) this.step(1-it/500);
+    this.fit(); this.draw();
+  },
+  step(t){
+    const P=this.pts,n=P.length;
+    for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){const dx=P[j].x-P[i].x,dy=P[j].y-P[i].y,d2=dx*dx+dy*dy+.01;if(d2>90000)continue;
+      const f=600/d2;P[i].vx-=dx*f;P[i].vy-=dy*f;P[j].vx+=dx*f;P[j].vy+=dy*f}
+    for(const [a,b,L,k] of this.springs){if(a===undefined||b===undefined)continue;const A=P[a],B=P[b],dx=B.x-A.x,dy=B.y-A.y,d=Math.hypot(dx,dy)+.01,f=k*(d-L)/d;
+      A.vx+=dx*f;A.vy+=dy*f;B.vx-=dx*f;B.vy-=dy*f}
+    for(const p of P){p.vx-=p.x*.002;p.vy-=p.y*.002;p.x+=p.vx*.5*t;p.y+=p.vy*.5*t;p.vx*=.6;p.vy*=.6}
+  },
+  fit(){const cv=$('#gcv'),W=cv.parentElement.clientWidth,H=cv.parentElement.clientHeight;const xs=this.pts.map(p=>p.x),ys=this.pts.map(p=>p.y);
+    const x0=Math.min(...xs),x1=Math.max(...xs),y0=Math.min(...ys),y1=Math.max(...ys);
+    const k=Math.min(W/(x1-x0+160),H/(y1-y0+100));this.view={k,x:W/2-k*(x0+x1)/2,y:H/2-k*(y0+y1)/2}},
+  tx(p){return [p.x*this.view.k+this.view.x,p.y*this.view.k+this.view.y]},
+  draw(){
+    const cv=$('#gcv'),dpr=devicePixelRatio||1,W=cv.parentElement.clientWidth,H=cv.parentElement.clientHeight;
+    cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';
+    const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);if(!S)return;
+    const P=this.pts,I=this.idx,tg=new Set(S.graph.tangles),hs=new Set(S.hotspots.map(h=>h.contig));
+    // candidate (non-graph) edges
+    this.edgeHits=[];
+    for(const c of S.candidates){
+      const a=P[I[c.a.join(':')]],b=P[I[c.b.join(':')]];if(!a||!b)continue;
+      const top=c.via.length?'path':c.evidence.find(e=>e!=='graph')||'graph';
+      if(c.graph_link&&!layers.graph)continue; if(!c.graph_link&&!layers[top])continue;
+      if(c.score<2&&!(this.sel&&this.sel.id===c.id))continue;
+      const [x1,y1]=this.tx(a),[x2,y2]=this.tx(b),mx=(x1+x2)/2+(y2-y1)*.15,my=(y1+y2)/2-(x2-x1)*.15;
+      const on=this.sel&&this.sel.id===c.id;
+      g.beginPath();g.moveTo(x1,y1);c.graph_link?g.lineTo(x2,y2):g.quadraticCurveTo(mx,my,x2,y2);
+      g.strokeStyle=c.graph_link?css('--ev-graph'):css(EV[top]);
+      g.globalAlpha=on?1:isDone(c)?.9:Math.min(.85,.15+c.score/25);
+      g.lineWidth=on?4:c.graph_link?2:1+c.score/8; g.setLineDash(c.via.length?[6,4]:top==='hic'&&!c.graph_link?[2,3]:[]);
+      g.stroke();g.setLineDash([]);g.globalAlpha=1;
+      this.edgeHits.push({c,x:c.graph_link?(x1+x2)/2:(x1+2*mx+x2)/4,y:c.graph_link?(y1+y2)/2:(y1+2*my+y2)/4});
+    }
+    // segments
+    for(const s of S.graph.segments){
+      const [x1,y1]=this.tx(P[I[s.name+':L']]),[x2,y2]=this.tx(P[I[s.name+':R']]);
+      const hl=this.highlight&&this.highlight.includes(s.name), insel=this.sel&&(this.sel.a[0]===s.name||this.sel.b[0]===s.name);
+      g.lineCap='round';g.lineWidth=Math.max(5,8*Math.min(1.5,this.view.k));
+      g.strokeStyle=tg.has(s.name)?css('--bad'):(hl||insel)?css('--accent'):css('--muted');
+      g.beginPath();g.moveTo(x1,y1);g.lineTo(x2,y2);g.stroke();
+      // arrow head at R end
+      const ang=Math.atan2(y2-y1,x2-x1);g.fillStyle=g.strokeStyle;g.beginPath();g.moveTo(x2+Math.cos(ang)*9,y2+Math.sin(ang)*9);
+      g.lineTo(x2+Math.cos(ang+2.3)*7,y2+Math.sin(ang+2.3)*7);g.lineTo(x2+Math.cos(ang-2.3)*7,y2+Math.sin(ang-2.3)*7);g.fill();
+      if(hs.has(s.name)){g.strokeStyle=css('--warn');g.lineWidth=2;g.beginPath();g.arc((x1+x2)/2,(y1+y2)/2,9,0,7);g.stroke()}
+      g.fillStyle=css('--ink');g.font='11px system-ui';g.fillText(`${s.name} ${fmt(s.length)}`,(x1+x2)/2+8,(y1+y2)/2-8);
+      // dead-end markers with clip counts
+      for(const side of 'LR'){const c=s.clips[side];if(!c)continue;const [x,y]=side==='L'?[x1,y1]:[x2,y2];
+        g.fillStyle=css('--ev-softclip');g.font='10px system-ui';g.fillText('✂'+c,x+4,y+12)}
+    }
+  }};
+(function(){const cv=$('#gcv'),tip=$('#tip');let drag=null;
+  cv.onwheel=e=>{e.preventDefault();const f=e.deltaY<0?1.15:1/1.15,r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+    G.view.x=mx-(mx-G.view.x)*f;G.view.y=my-(my-G.view.y)*f;G.view.k*=f;G.draw()};
+  cv.onmousedown=e=>{drag={x:e.clientX,y:e.clientY,vx:G.view.x,vy:G.view.y,moved:0}};
+  window.addEventListener('mouseup',e=>{if(drag&&drag.moved<4)gclick(e);drag=null});
+  cv.onmousemove=e=>{if(drag){drag.moved+=Math.abs(e.movementX)+Math.abs(e.movementY);G.view.x=drag.vx+e.clientX-drag.x;G.view.y=drag.vy+e.clientY-drag.y;G.draw();return}
+    const h=hit(e);if(!h){tip.style.display='none';return}
+    const r=cv.getBoundingClientRect();tip.style.display='block';tip.style.left=(e.clientX-r.left+12)+'px';tip.style.top=(e.clientY-r.top+12)+'px';
+    tip.innerHTML=h.seg?`<b>${esc(h.seg.name)}</b> ${fmt(h.seg.length)}<br>coverage ${Object.entries(h.seg.cov).map(([k,v])=>k+' '+v+'×').join(', ')||'–'}<br>clips L ${h.seg.clips.L} · R ${h.seg.clips.R}`
+      :`<b>${esc(h.c.id)}</b> score ${h.c.score}<br>${h.c.evidence.join(', ')}`};
+  function hit(e){const r=cv.getBoundingClientRect(),x=e.clientX-r.left,y=e.clientY-r.top;let best=null,bd=12;
+    for(const h of G.edgeHits||[]){const d=Math.hypot(h.x-x,h.y-y);if(d<bd){bd=d;best={c:h.c}}}
+    for(const s of S.graph.segments){const [x1,y1]=G.tx(G.pts[G.idx[s.name+':L']]),[x2,y2]=G.tx(G.pts[G.idx[s.name+':R']]);
+      const dx=x2-x1,dy=y2-y1,t=Math.max(0,Math.min(1,((x-x1)*dx+(y-y1)*dy)/(dx*dx+dy*dy||1)));const d=Math.hypot(x1+t*dx-x,y1+t*dy-y);
+      if(d<bd){bd=d;best={seg:s,t}}}return best}
+  function gclick(e){const h=hit(e);if(!h)return;if(h.c)selectCand(h.c);else{G.highlight=[h.seg.name];G.sel=null;G.draw();E.single(h.seg.name,Math.round(h.t*h.seg.length))}}
+  window.addEventListener('resize',()=>{G.draw();E.redraw();drawHiC()});
+})();
+
+// ------------------------------------------------------------------ contig editor (Gap5-style)
+const CW=8.4, RH=13, BASE={A:'#2b8a3e',C:'#1c7ed6',G:'#e67700',T:'#c92a2a'};
+class Editor{
+  constructor(root,contig,center,label){
+    this.contig=contig;this.label=label||'';this.dots=true;
+    root.insertAdjacentHTML('beforeend',`<div class="ed"><div class="edbar"><b></b><span class="muted lbl"></span><span class="sp"></span><span class="muted rows"></span>
+      <label class="muted"><input type="checkbox" class="dots" checked> dots for matches</label>
+      <button class="le" title="[">◀ L end</button><button class="pl">◀</button><input class="go" style="width:110px" placeholder="position"><button class="pr">▶</button><button class="re" title="]">R end ▶</button></div><div class="edcv"><canvas></canvas></div></div>`);
+    this.el=root.lastElementChild;this.cv=this.el.querySelector('canvas');
+    this.el.querySelector('.dots').onchange=e=>{this.dots=e.target.checked;this.draw()};
+    this.el.querySelector('.le').onclick=()=>this.goto(0);
+    this.el.querySelector('.re').onclick=()=>this.goto(1e12);
+    this.el.querySelector('.pl').onclick=()=>this.goto(this.x0+this.ncol()/2-this.ncol()*.8);
+    this.el.querySelector('.pr').onclick=()=>this.goto(this.x0+this.ncol()/2+this.ncol()*.8);
+    this.el.querySelector('.go').onchange=e=>this.goto(+e.target.value);
+    this.cv.parentElement.onwheel=e=>{e.preventDefault();if(Math.abs(e.deltaX)>Math.abs(e.deltaY)||e.shiftKey)this.goto(this.x0+this.ncol()/2+Math.sign(e.deltaX||e.deltaY)*20);else{this.scroll=Math.max(0,(this.scroll||0)+Math.sign(e.deltaY)*3);this.draw()}};
+    this.cv.onclick=e=>{const r=this.cv.getBoundingClientRect();this.cursor=this.x0+Math.floor((e.clientX-r.left-70)/CW);this.draw()};
+    this.goto(center);
+  }
+  ncol(){return Math.max(10,Math.floor((this.cv.parentElement.clientWidth-70)/CW))}
+  async goto(center){
+    this.len=this.len||Object.values(S.graph.segments).find(s=>s.name===this.contig).length;
+    const n=this.ncol();let x0=Math.round(center-n/2);x0=Math.max(-n+20,Math.min(this.len-20,x0));this.x0=x0;
+    if(!this.data||x0<this.data.start||x0+n>this.data.end){
+      const tok=this.tok=Math.random();const d=await api(`/api/region?contig=${encodeURIComponent(this.contig)}&start=${x0-n}&end=${x0+2*n}`);
+      if(tok!==this.tok)return;this.data=d;}
+    this.el.querySelector('.edbar b').textContent=`${this.contig}:${Math.max(0,x0)+1}-${Math.max(0,Math.min(this.len,x0+n))}`;
+    this.el.querySelector('.lbl').textContent=`${fmt(this.len)} ${this.label}`;
+    this.draw();
+  }
+  draw(){
+    const cv=this.cv,dpr=devicePixelRatio||1,W=cv.parentElement.clientWidth,H=cv.parentElement.clientHeight;
+    cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';
+    const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);const d=this.data;if(!d)return;
+    const n=this.ncol(),X=c=>70+(c-this.x0)*CW, ink=css('--ink'),mut=css('--muted');
+    g.font=`12px ${css('--mono')}`;g.textBaseline='top';
+    // beyond the contig: shade
+    g.fillStyle=css('--bg');if(this.x0<0)g.fillRect(70,0,-this.x0*CW,H);if(this.x0+n>this.len)g.fillRect(X(this.len),0,(this.x0+n-this.len)*CW,H);
+    // contig ends
+    for(const e of [0,this.len]){if(e>=this.x0&&e<=this.x0+n){g.fillStyle=css('--accent');g.fillRect(X(e)-1,0,2,H)}}
+    if(this.cursor!=null){g.fillStyle=css('--hi');g.fillRect(X(this.cursor),0,CW,H)}
+    // ruler
+    g.fillStyle=mut;for(let c=Math.ceil(this.x0/10)*10;c<this.x0+n;c+=10){if(c<0||c>this.len)continue;g.fillRect(X(c),12,1,4);if(c%50===0)g.fillText(String(c+1),X(c)+2,0)}
+    const lab=(t,y)=>{g.fillStyle=mut;g.fillText(t,4,y)};
+    lab('contig',20);lab('consens',20+RH);lab('depth',20+2*RH);
+    for(let c=this.x0;c<this.x0+n;c++){const i=c-d.start;if(i<0||i>=d.ref.length)continue;const b=d.ref[i],cs=d.consensus[i];
+      g.fillStyle=BASE[b.toUpperCase()]||ink;g.fillText(b,X(c),20);
+      if(cs!==' '){g.fillStyle=cs!==b.toUpperCase()?css('--mm'):mut;g.fillText(cs,X(c),20+RH)}
+      const dp=d.depth[i];g.fillStyle=css('--accent');g.globalAlpha=.5;const h=Math.min(RH-2,dp/3);g.fillRect(X(c),20+3*RH-h-1,CW-1,h);g.globalAlpha=1}
+    const y0=20+3*RH+4, maxRows=Math.floor((H-y0)/RH), rows=d.rows.slice(this.scroll||0,(this.scroll||0)+maxRows);
+    rows.forEach((row,ri)=>{const y=y0+ri*RH;
+      for(const r of row){const a=Math.max(this.x0,r.x),b=Math.min(this.x0+n,r.x+r.s.length);if(a>=b)continue;
+        g.fillStyle=css('--p-'+(r.platform||'ont'));g.fillRect(X(a),y,(b-a)*CW,RH-1);
+        if(a===r.x){g.fillStyle=mut;g.fillText(r.rev?'<':'>',X(a)-CW,y)}
+        for(let c=a;c<b;c++){const ch=r.s[c-r.x],ri2=c-d.start,ref=ri2>=0&&ri2<d.ref.length?d.ref[ri2].toUpperCase():'';
+          if(ch>='a'&&ch<='z'){g.fillStyle=css('--clip-bg');g.fillRect(X(c),y,CW,RH-1);g.fillStyle=css('--clip-ink');g.fillText(ch,X(c),y)}
+          else if(ch==='*'){g.fillStyle=css('--mm');g.fillText('*',X(c),y)}
+          else if(ch===ref){g.fillStyle=mut;g.fillText(this.dots?'·':ch,X(c),y)}
+          else {g.fillStyle=css('--mm');g.fillText(ch,X(c),y)}}
+        g.fillStyle=css('--ins');for(const [p,s] of r.ins){if(p>=a&&p<b)g.fillRect(X(p)-1,y,2,RH-1)}}});
+    this.el.querySelector('.rows').textContent=d.rows.length>maxRows?`rows ${(this.scroll||0)+1}–${Math.min(d.rows.length,(this.scroll||0)+maxRows)} of ${d.rows.length}`:`${d.rows.length} rows`;
+    g.fillStyle=mut;g.fillText('reads',4,y0);
+  }
+}
+const E={eds:[],
+  clear(){$('#editors').innerHTML='';this.eds=[]},
+  single(contig,pos){this.clear();this.eds.push(new Editor($('#editors'),contig,pos))},
+  junction(c){this.clear();
+    for(const [ctg,side] of [c.a,c.b]){const len=S.graph.segments[S.segIdx[ctg]].length;
+      this.eds.push(new Editor($('#editors'),ctg,side==='L'?0:len,`· showing ${side} end — orange = soft-clipped bases running off the end`))}},
+  redraw(){this.eds.forEach(e=>e.draw())}};
+
+// ------------------------------------------------------------------ Hi-C heatmap
+async function drawHiC(){
+  const cv=$('#hcv'),W=cv.parentElement.clientWidth,H=cv.parentElement.clientHeight,dpr=devicePixelRatio||1;
+  cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);
+  if(!S||!S.has_hic){g.fillStyle=css('--muted');g.fillText('no Hi-C loaded (--pairs)',8,16);return}
+  const m=await api('/api/hic');const n=m.order.length,lab=46,sz=Math.min(W-lab,H-lab),c=sz/n;
+  const off=m.m.flat().filter((v,i)=>i%(n+1)!==0),mx=Math.max(...off,1e-9),mn=Math.min(...off,mx);
+  const dark=matchMedia('(prefers-color-scheme: dark)').matches&&document.documentElement.dataset.theme!=='light';
+  for(let i=0;i<n;i++)for(let j=0;j<n;j++){const v=i===j?1:Math.max(0,Math.min(1,(m.m[i][j]-mn)/(mx-mn||1)));
+    g.fillStyle=dark?`rgb(${26+v*200|0},${30+v*40|0},${38+v*150|0})`:`rgb(${255-v*100|0},${255-v*215|0},${255-v*80|0})`;g.fillRect(lab+j*c,lab+i*c,c+.5,c+.5)}
+  g.fillStyle=css('--ink');g.font='10px system-ui';
+  m.order.forEach((o,i)=>{g.save();g.translate(lab+i*c+c/2+3,lab-4);g.rotate(-Math.PI/3);g.fillText(o,0,0);g.restore();g.fillText(o,2,lab+i*c+c/2+3)});
+  // scaffold boundaries
+  g.strokeStyle=css('--accent');let k=0;for(const sc of S.scaffolds){const srcs=new Set(sc.parts.map(p=>S.pieces[p.piece].src));k+=srcs.size;if(k<n){g.beginPath();g.moveTo(lab+k*c,lab);g.lineTo(lab+k*c,lab+sz);g.moveTo(lab,lab+k*c);g.lineTo(lab+sz,lab+k*c);g.stroke()}}
+}
+
+// ------------------------------------------------------------------ keys
+window.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const ed=E.eds[E.eds.length-1];
+  if(e.key==='j')nextCand(1);else if(e.key==='k')nextCand(-1);else if(e.key==='a')acceptSel();else if(e.key==='x')rejectSel();
+  else if(e.key==='u')doOp({op:'undo'});
+  else if(ed&&e.key==='ArrowRight')ed.goto(ed.x0+ed.ncol()/2+(e.shiftKey?ed.ncol():20));
+  else if(ed&&e.key==='ArrowLeft')ed.goto(ed.x0+ed.ncol()/2-(e.shiftKey?ed.ncol():20));
+  else if(ed&&e.key==='[')ed.goto(0);else if(ed&&e.key===']')ed.goto(1e12);});
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+__pycache__/
+*.egg-info/
+demo/
+*.gapgraph.json
+gapgraph_out*
+gapgraph_project.json
