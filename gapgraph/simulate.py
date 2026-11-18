@@ -201,3 +201,84 @@ def simulate(outdir, seed=7, scale=1.0, hic_pairs=40000):
     with open(os.path.join(outdir, "truth.json"), "w") as fh:
         json.dump(truth, fh, indent=1)
     return {"gfa": os.path.join(outdir, "assembly.gfa"), "sam": files, "pairs": pairs_path, "truth": truth}
+
+
+# ---------------------------------------------------------------------------
+# circular bacterial genome
+# ---------------------------------------------------------------------------
+CIRC_PLATFORMS = {
+    "illumina": dict(len=(150, 150), sub=0.002, ins=0.0002, dele=0.0002, depth=30),
+    "ont": dict(len=(3000, 12000), sub=0.03, ins=0.015, dele=0.02, depth=30),
+}
+
+
+def _mutate(rng, s, rate):
+    return "".join(rng.choice([x for x in "ACGT" if x != c]) if rng.random() < rate else c for c in s)
+
+
+def simulate_circular(outdir, seed=11, scale=0.5):
+    """Chromosome (dnaA at base 1 in the truth) + plasmid.
+
+    Assembly as an assembler might leave it:
+      chr_1  forward, starting at 30% of the chromosome (not at dnaA)
+      chr_2  reverse-complemented, overlaps chr_1 by 300 bp at the break and
+             runs past the origin, duplicating 1 kb of chr_1's start
+      plasmid  single contig with a 600 bp duplicated end overlap
+    No GFA links: closure must come from reads.
+    """
+    rng = random.Random(seed)
+    os.makedirs(outdir, exist_ok=True)
+    G = int(200000 * scale)
+    P = int(16000 * scale)
+    dnaA = "ATG" + _rand_seq(rng, 1398) + "TAA"
+    chrom = dnaA + _rand_seq(rng, G - len(dnaA))
+    plasmid = _rand_seq(rng, P)
+    o, s1, brk_ovl, ori_ovl, p_ovl = int(0.3 * G), int(0.45 * G), 300, 1000, 600
+    x_start = o + s1 - brk_ovl
+    X = chrom[x_start:] + chrom[:o + ori_ovl]
+    contigs = {"chr_1": chrom[o:o + s1], "chr_2": revcomp(X), "plasmid": plasmid + plasmid[:p_ovl]}
+    # blocks are contiguous in "unrolled" molecule coordinates (copies of the
+    # circle laid end to end), so reads crossing the origin align as one piece
+    chrom_blocks = [("chr_1", 0, o, s1, "+"), ("chr_2", 0, x_start, len(X), "-")]
+    plasmid_blocks = [("plasmid", 0, 0, P + p_ovl, "+")]
+
+    write_fasta([("chromosome", chrom), ("plasmid", plasmid)], os.path.join(outdir, "truth.fasta"))
+    write_fasta(list(contigs.items()), os.path.join(outdir, "contigs.fasta"))
+    write_fasta([("dnaA_related_strain", _mutate(rng, dnaA, 0.04))], os.path.join(outdir, "dnaA_related.fasta"))
+    with open(os.path.join(outdir, "assembly.gfa"), "w") as fh:
+        fh.write("H\tVN:Z:1.0\n")
+        for n, s in contigs.items():
+            fh.write(f"S\t{n}\t{s}\tLN:i:{len(s)}\n")
+
+    for plat, p in CIRC_PLATFORMS.items():
+        with open(os.path.join(outdir, f"{plat}.sam"), "w") as fh:
+            for n, s in contigs.items():
+                fh.write(f"@SQ\tSN:{n}\tLN:{len(s)}\n")
+            r = 0
+            for mol, blocks in ((chrom, chrom_blocks), (plasmid, plasmid_blocks)):
+                M = len(mol)
+                ext = mol * (2 + p["len"][1] // M)          # reads wrap the origin
+                copies = len(ext) // M
+                shifted = [(c, cs, gs + k * M, gl, ori) for k in range(-1, copies) for c, cs, gs, gl, ori in blocks]
+                for _ in range(int(M * p["depth"] / (sum(p["len"]) / 2))):
+                    ln = rng.randint(*p["len"])
+                    gs = rng.randrange(M)
+                    ops = _simulate_read(rng, ext, gs, gs + ln, p)
+                    rev = rng.random() < 0.5
+                    qname = f"{plat}_{r}"
+                    r += 1
+                    alns = [a for a in (_block_alignment(ops, b, qname, rev) for b in shifted) if a]
+                    alns.sort(key=lambda a: -a["aligned"])
+                    for i, a in enumerate(alns):
+                        flag = (16 if a["reverse"] else 0) | (2048 if i else 0)
+                        fh.write(f"{qname}\t{flag}\t{a['ref']}\t{a['pos'] + 1}\t{a['mapq']}\t{a['cigar']}"
+                                 f"\t*\t0\t0\t{a['seq']}\t*\n")
+    truth = {"chromosome_length": G, "plasmid_length": P,
+             "breaks": "chr_1:R ~ chr_2:R overlap 300; chr_2:L ~ chr_1:L overlap 1000 (origin)",
+             "plasmid_end_overlap": p_ovl, "dnaA": "chromosome base 1, + strand"}
+    import json
+    with open(os.path.join(outdir, "truth.json"), "w") as fh:
+        json.dump(truth, fh, indent=1)
+    return {"gfa": os.path.join(outdir, "assembly.gfa"),
+            "sam": {pl: os.path.join(outdir, f"{pl}.sam") for pl in CIRC_PLATFORMS},
+            "start": os.path.join(outdir, "dnaA_related.fasta"), "truth": truth}

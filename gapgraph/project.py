@@ -101,6 +101,12 @@ class Project:
 
     # ------------------------------------------------------------- operations
     def _reverse(self, s):
+        if s.get("circular") and s.get("origin"):
+            # unrotated circle = linear[:U - t]; reversed it is revcomp(linear)[:U - t]
+            U = len(self.scaffold_seq({**s, "circular": False}, rotate=False))
+            t = max(0, -s.get("circ_gap", 0))
+            o = s["origin"]
+            s["origin"] = {"pos": (U - 1 - o["pos"]) % (U - t), "strand": flip_orient(o["strand"])}
         parts = s["parts"][::-1]
         gaps = [p["gap"] for p in s["parts"]][:-1][::-1] + [0]
         s["parts"] = [{"piece": p["piece"], "orient": flip_orient(p["orient"]), "gap": g}
@@ -110,7 +116,9 @@ class Project:
         sa, side_a = self._scaffold_end(tuple(end_a))
         sb, side_b = self._scaffold_end(tuple(end_b))
         if sa == sb:
-            raise ProjectError("both ends on the same scaffold (circularisation not supported here)")
+            if side_a == side_b:
+                raise ProjectError("same end twice")
+            return self.circularise(self.scaffolds[sa]["name"], gap, reason=reason)
         self._checkpoint("join", a=list(end_a), b=list(end_b), gap=gap, reason=reason)
         A, B = self.scaffolds[sa], self.scaffolds[sb]
         if side_a == "L":
@@ -184,43 +192,151 @@ class Project:
         self._reverse(s)
         self.save()
 
+    def circularise(self, scaffold, gap=0, reason=""):
+        """Close a scaffold into a circle.  gap < 0: the two ends overlap by
+        -gap bp (duplicated sequence, typical of Canu/Flye/hifiasm circular
+        contigs) and that much is trimmed from the end; gap > 0: Ns inserted."""
+        s = self._scaffold(scaffold)
+        if s.get("circular"):
+            raise ProjectError(f"{scaffold} is already circular")
+        if -gap >= len(self.scaffold_seq(s, rotate=False)):
+            raise ProjectError("overlap longer than the scaffold")
+        self._checkpoint("circularise", scaffold=scaffold, gap=gap, reason=reason)
+        s["circular"] = True
+        s["circ_gap"] = int(gap)
+        self.save()
+        return scaffold
+
+    def linearise(self, scaffold):
+        s = self._scaffold(scaffold)
+        self._checkpoint("linearise", scaffold=scaffold)
+        for k in ("circular", "circ_gap", "origin"):
+            s.pop(k, None)
+        self.save()
+
+    def set_origin(self, scaffold, pos, strand="+", reason=""):
+        """Rotate a circular scaffold so `pos` (0-based, in the unrotated
+        circular sequence) becomes base 1; strand '-' also reverse-complements
+        so a minus-strand dnaA ends up forward.  `pos` is the gene's first base."""
+        s = self._scaffold(scaffold)
+        if not s.get("circular"):
+            raise ProjectError("circularise the scaffold before setting its start")
+        L = len(self.scaffold_seq(s, rotate=False))
+        if not 0 <= pos < L:
+            raise ProjectError("start position outside scaffold")
+        self._checkpoint("set_origin", scaffold=scaffold, pos=pos, strand=strand, reason=reason)
+        s["origin"] = {"pos": int(pos), "strand": strand}
+        self.save()
+
+    def _scaffold(self, name):
+        for s in self.scaffolds:
+            if s["name"] == name:
+                return s
+        raise ProjectError(f"no scaffold {name}")
+
     # ----------------------------------------------------------------- export
-    def scaffold_seq(self, s):
-        out = []
-        trim = 0
-        for part in s["parts"]:
-            seq = self.piece_seq(part["piece"])
-            if part["orient"] == "-":
-                seq = revcomp(seq)
-            out.append(seq[trim:])
-            g = part["gap"]
-            if g > 0:
-                out.append("N" * g)
-                trim = 0
+    def components(self, s, rotate=True):
+        """Scaffold as AGP-like components: ('W', src, start, end, orient) with
+        0-based half-open src coords, or ('N', length, evidence)."""
+        comps, trim = [], 0
+        for i, part in enumerate(s["parts"]):
+            p = self.pieces[part["piece"]]
+            a, b = p["start"], p["end"]
+            if part["orient"] == "+":
+                a += trim
             else:
-                trim = -g  # overlap: trim from the next piece
+                b -= trim
+            comps.append(["W", p["src"], a, b, part["orient"]])
+            g = part["gap"]
+            trim = 0
+            if i < len(s["parts"]) - 1:
+                if g > 0:
+                    comps.append(["N", g, part.get("ev", "unspecified")])
+                else:
+                    trim = -g
+        if s.get("circular"):
+            g = s.get("circ_gap", 0)
+            if g > 0:
+                comps.append(["N", g, "unspecified"])
+            t = -g
+            while t > 0:          # trim the duplicated overlap off the end
+                c = comps[-1]
+                n = c[1] if c[0] == "N" else c[3] - c[2]
+                if n <= t:
+                    comps.pop()
+                    t -= n
+                    continue
+                if c[0] == "N":
+                    c[1] -= t
+                elif c[4] == "+":
+                    c[3] -= t
+                else:
+                    c[2] += t
+                t = 0
+            if rotate and s.get("origin"):
+                comps = self._rotate(comps, s["origin"])
+        return comps
+
+    @staticmethod
+    def _clen(c):
+        return c[1] if c[0] == "N" else c[3] - c[2]
+
+    def _rotate(self, comps, origin):
+        L = sum(self._clen(c) for c in comps)
+        pos = origin["pos"] % L
+        if origin.get("strand", "+") == "-":
+            comps = [c if c[0] == "N" else ["W", c[1], c[2], c[3], flip_orient(c[4])] for c in comps[::-1]]
+            pos = L - 1 - pos
+        out, x = [], 0
+        for i, c in enumerate(comps):
+            n = self._clen(c)
+            if x <= pos < x + n:
+                k = pos - x
+                if k == 0:
+                    return comps[i:] + comps[:i]
+                if c[0] == "N":
+                    left, right = ["N", k, c[2]], ["N", n - k, c[2]]
+                elif c[4] == "+":
+                    left, right = ["W", c[1], c[2], c[2] + k, "+"], ["W", c[1], c[2] + k, c[3], "+"]
+                else:
+                    left, right = ["W", c[1], c[3] - k, c[3], "-"], ["W", c[1], c[2], c[3] - k, "-"]
+                return [right] + comps[i + 1:] + comps[:i] + [left]
+            x += n
+        return comps
+
+    def scaffold_seq(self, s, rotate=True):
+        out = []
+        for c in self.components(s, rotate):
+            if c[0] == "N":
+                out.append("N" * c[1])
+            else:
+                seq = self.seqs[c[1]][c[2]:c[3]]
+                out.append(seq if c[4] == "+" else revcomp(seq))
         return "".join(out)
 
     def export(self, prefix):
-        recs = [(s["name"], self.scaffold_seq(s)) for s in self.scaffolds]
+        recs = []
+        for s in self.scaffolds:
+            seq = self.scaffold_seq(s)
+            name = s["name"]
+            if s.get("circular"):
+                name += f" length={len(seq)} circular=true [topology=circular]"
+            recs.append((name, seq))
         write_fasta(recs, prefix + ".fasta")
         with open(prefix + ".agp", "w") as fh:
             fh.write("##agp-version\t2.1\n")
             for s in self.scaffolds:
-                pos, k, trim = 1, 1, 0
-                for i, part in enumerate(s["parts"]):
-                    p = self.pieces[part["piece"]]
-                    ln = p["end"] - p["start"] - trim
-                    cs, ce = (p["start"] + 1 + trim, p["end"]) if part["orient"] == "+" else (p["start"] + 1, p["end"] - trim)
-                    fh.write(f"{s['name']}\t{pos}\t{pos + ln - 1}\t{k}\tW\t{p['src']}\t{cs}\t{ce}\t{part['orient']}\n")
-                    pos += ln
+                if s.get("circular"):
+                    fh.write(f"# {s['name']} is circular\n")
+                pos, k = 1, 1
+                for c in self.components(s):
+                    n = self._clen(c)
+                    if c[0] == "W":
+                        fh.write(f"{s['name']}\t{pos}\t{pos + n - 1}\t{k}\tW\t{c[1]}\t{c[2] + 1}\t{c[3]}\t{c[4]}\n")
+                    else:
+                        fh.write(f"{s['name']}\t{pos}\t{pos + n - 1}\t{k}\tN\t{n}\tscaffold\tyes\t{c[2]}\n")
+                    pos += n
                     k += 1
-                    g = part["gap"]
-                    trim = -g if g < 0 else 0
-                    if g > 0 and i < len(s["parts"]) - 1:
-                        fh.write(f"{s['name']}\t{pos}\t{pos + g - 1}\t{k}\tN\t{g}\tscaffold\tyes\t{part.get('ev', 'unspecified')}\n")
-                        pos += g
-                        k += 1
         with open(prefix + ".log.json", "w") as fh:
             json.dump(self.log, fh, indent=1)
         return [prefix + ".fasta", prefix + ".agp", prefix + ".log.json"]

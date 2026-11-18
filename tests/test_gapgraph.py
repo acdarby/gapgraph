@@ -100,7 +100,10 @@ def test_undo_and_errors():
     assert len(P.scaffolds) == 1
     assert P.scaffold_seq(P.scaffolds[0]) == "A" * 50 + "N" * 10 + "G" * 50
     with pytest.raises(ProjectError):
-        P.join(("x", "L"), ("y", "L"))   # same scaffold
+        P.join(("x", "R"), ("x", "R"))   # same end twice
+    P.join(("x", "L"), ("y", "L"), gap=0)  # remaining ends -> circularise
+    assert P.scaffolds[0]["circular"]
+    P.undo()
     P.undo()
     assert len(P.scaffolds) == 2
 
@@ -109,3 +112,74 @@ def test_overlap_trim():
     P = Project({"x": "AAAACCGG", "y": "CCGGTTTT"})
     P.join(("x", "R"), ("y", "L"), gap=-4)
     assert P.scaffold_seq(P.scaffolds[0]) == "AAAACCGGTTTT"
+
+
+# ------------------------------------------------------------ circular genomes
+from gapgraph.simulate import simulate_circular
+from gapgraph import circular
+
+
+@pytest.fixture(scope="module")
+def circ(tmp_path_factory):
+    d = str(tmp_path_factory.mktemp("circ"))
+    r = simulate_circular(d, scale=0.3, seed=5)
+    return d, r
+
+
+def _session(r, **kw):
+    return Session(gfa=r["gfa"], alignments=[(r["sam"]["illumina"], "illumina"), (r["sam"]["ont"], "ont")], **kw)
+
+
+def test_overlap_and_start_detection():
+    import random
+    rng = random.Random(2)
+    g = "".join(rng.choice("ACGT") for _ in range(30000))
+    assert circular.end_overlap(g + g[:777]) == 777
+    assert circular.end_overlap(g) == 0
+    gene = g[12000:13400]
+    hit = circular.find_start(g, revcomp(gene))
+    assert hit["strand"] == "-" and hit["pos"] == 13399
+    # gene spanning the current origin
+    rot = g[12500:] + g[:12500]
+    assert circular.find_start(rot, gene)["pos"] == len(g) - 500
+
+
+def test_wrapping_reads_are_evidence(circ):
+    d, r = circ
+    S = _session(r)
+    c = S.cand_by_id["plasmid:L~plasmid:R"]
+    assert c["longread_reads"] > 5 and c["softclip_reads"] > 5
+    assert c["gap"] == -r["truth"]["plasmid_end_overlap"]   # snapped to exact overlap
+    assert S.cand_by_id["chr_1:L~chr_2:L"]["gap"] == -1000
+    assert S.cand_by_id["chr_1:R~chr_2:R"]["gap"] == -300
+
+
+def test_bacterial_auto_finish_is_exact(circ, tmp_path):
+    d, r = circ
+    S = _session(r, start_fasta=r["start"])
+    res = S.auto_scaffold()
+    assert len(res["circularised"]) == 2 and res["rotated"]
+    S.project.export(str(tmp_path / "fin"))
+    truth = read_fasta(os.path.join(d, "truth.fasta"))
+    out = read_fasta(str(tmp_path / "fin.fasta"))
+    assert sorted(out.values(), key=len) == sorted(truth.values(), key=len)
+    agp = (tmp_path / "fin.agp").read_text()
+    assert "circular" in agp
+
+
+def test_rotation_flip_consistency():
+    seq = "ATGAAACCCGGGTTTAAACCCGGGTTTA" * 5
+    P = Project({"c": seq + seq[:30]})
+    P.circularise("scf_c", -30)
+    P.set_origin("scf_c", 40, "+")
+    s1 = P.scaffold_seq(P.scaffolds[0])
+    P.flip("scf_c")
+    assert P.scaffold_seq(P.scaffolds[0]) == s1   # same molecule, same start, same strand
+    assert s1 == seq[40:] + seq[:40]
+    P.flip("scf_c")
+    circle = P.scaffold_seq(P.scaffolds[0], rotate=False)
+    P.set_origin("scf_c", 50, "-")          # gene's first base is circle[50], on the minus strand
+    out = P.scaffold_seq(P.scaffolds[0])
+    rc = revcomp(circle)
+    k = len(circle) - 1 - 50
+    assert out == rc[k:] + rc[:k] and out[0] == revcomp(circle[50])

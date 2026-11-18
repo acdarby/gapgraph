@@ -34,10 +34,14 @@ def bridges(hits, min_mapq=5, min_aln=500, end_slack=1000):
         hs.sort(key=lambda h: h.qs)
         path = []
         for h1, h2 in zip(hs, hs[1:]):
-            if h1.ref == h2.ref and abs(h1.qe - h2.qs) < end_slack and h1.strand == h2.strand:
-                continue  # split alignment within one contig (indel/SV), not a bridge
             e1, un1 = _exit_end(h1, end_slack)
             e2, un2 = _entry_end(h2, end_slack)
+            if h1.ref == h2.ref and h1.strand == h2.strand and abs(h1.qe - h2.qs) < end_slack:
+                wraps = e1 != e2 and un1 <= end_slack and un2 <= end_slack
+                if not wraps:
+                    continue  # split alignment within one contig (indel/SV), not a bridge
+                # else: read runs off one end and continues at the other ->
+                # circular molecule wrapping the origin
             key = join_key(e1, e2)
             j = joins[key]
             if un1 > end_slack or un2 > end_slack:

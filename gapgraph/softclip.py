@@ -102,13 +102,17 @@ def match_clips(clips, seqs, k, max_inward=50000, min_shared=4, self_ok=False):
     return merged
 
 
-def naive_consensus(clip_seqs, max_len=2000, min_depth=2):
+def naive_consensus(clip_seqs, max_len=2000, min_depth=3, min_agree=0.6):
     """Column-majority consensus of outward clips (good for HiFi/Illumina,
     rough for ONT/CLR where indels misalign columns)."""
     cons = []
     for i in range(max_len):
         col = Counter(s[i].upper() for s in clip_seqs if len(s) > i)
-        if sum(col.values()) < min_depth:
+        n = sum(col.values())
+        if n < min_depth:
             break
-        cons.append(col.most_common(1)[0][0])
+        base, k = col.most_common(1)[0]
+        if k / n < min_agree:   # columns have drifted out of register (indels)
+            break
+        cons.append(base)
     return "".join(cons)

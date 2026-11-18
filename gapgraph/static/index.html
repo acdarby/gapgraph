@@ -120,7 +120,7 @@ async function load(keepLayout){
   for(const sc of S.scaffolds){sc.parts.forEach((p,i)=>{const pc=S.pieces[p.piece];const src=pc.src;
     const first=i===0,last=i===sc.parts.length-1;
     const leftEnd=p.orient==='+'?'L':'R', rightEnd=p.orient==='+'?'R':'L';
-    if(!first) S.joinedEnds.add(src+':'+leftEnd); if(!last) S.joinedEnds.add(src+':'+rightEnd);});}
+    if(!first||sc.circular) S.joinedEnds.add(src+':'+leftEnd); if(!last||sc.circular) S.joinedEnds.add(src+':'+rightEnd);});}
   $('#stats').textContent=`${S.graph.segments.length} contigs · ${S.scaffolds.length} scaffolds · ${S.candidates.length} candidate joins · ${S.hotspots.length} break hotspots · ${S.platforms.join('/')||'no reads'}${S.has_hic?' + Hi-C':''}`;
   if(!keepLayout) G.init(); else G.draw();
   renderList(); drawHiC();
@@ -140,17 +140,22 @@ function renderList(){
   } else if(tab==='breaks'){
     S.hotspots.filter(b=>!q||b.contig.includes(q)).forEach((b,i)=>{
       h+=`<div class="item" data-b="${i}"><div class="t"><span>${esc(b.contig)}:${b.pos}</span><span>${b.reads} reads</span></div>
-      <div class="chips"><span class="chip">${b.platform}</span><span class="chip">clip ${b.clip_side}</span><span class="chip">cov ${b.mean_cov}×</span></div></div>`});
+      <div class="chips"><span class="chip">${b.platform}</span><span class="chip">clip ${b.clip_side}</span><span class="chip">cov ${b.mean_cov}×</span>${b.explained?`<span class="chip" style="color:var(--ok)">${esc(b.explained)}</span>`:''}</div></div>`});
     if(!h) h='<div class="card muted">No internal soft-clip hotspots.</div>';
   } else if(tab==='paths'){
     S.paths.filter(p=>!q||p.path.join().includes(q)).forEach((p,i)=>{
       h+=`<div class="item" data-p="${i}"><div class="t"><span>${esc(p.path.join(' → '))}</span><span>${p.reads}</span></div></div>`});
     if(!h) h='<div class="card muted">No long reads spanning ≥3 contigs.</div>';
   } else if(tab==='scaffolds'){
+    if(S.circular.length){h+=`<div class="card"><h3>Circularity evidence</h3><table class="kv">`+S.circular.map(r=>`<tr><td>${esc(r.contig)} <span class="muted">${fmt(r.length)}</span></td><td title="graph self-link · duplicated end overlap · wrapping long reads · wrapping soft-clips">${r.graph_self_link?'self-link · ':''}${r.end_overlap?'ovl '+r.end_overlap+' · ':''}LR ${r.wrap_longreads} · clip ${r.wrap_softclips}</td></tr>`).join('')+`</table></div>`}
     S.scaffolds.forEach(sc=>{
-      h+=`<div class="item"><div class="t"><span>${esc(sc.name)}</span><span>${sc.parts.length} parts</span></div>
+      const geneOpts=S.start_genes.map(g=>`<option>${esc(g)}</option>`).join('');
+      h+=`<div class="item"><div class="t"><span>${esc(sc.name)} ${sc.circular?'<span class="chip" style="color:var(--ok);border-color:var(--ok)">⟳ circular</span>':''}</span><span>${sc.parts.length} parts</span></div>
+      ${sc.circular?`<div class="muted" style="font-size:12px">closure ${sc.circ_gap<0?'overlap '+(-sc.circ_gap)+' bp trimmed':sc.circ_gap>0?sc.circ_gap+' N':'exact'}${sc.origin?` · starts at ${sc.origin.pos}${sc.origin.strand}`:''}</div>`:''}
       <div class="chips" style="font-family:var(--mono)">${sc.parts.map((p,i)=>`<span class="chip">${esc(p.piece)}${p.orient}</span>${i<sc.parts.length-1?`<span class="chip" title="break here" data-brk="${esc(sc.name)}|${i}" style="cursor:pointer">${p.gap>0?'N'+p.gap:p.gap<0?'ovl'+(-p.gap):'·'} ✂</span>`:''}`).join('')}</div>
-      <div class="row"><button data-flip="${esc(sc.name)}">Flip</button><button data-disc="${esc(sc.name)}">Discard</button></div></div>`});
+      <div class="row"><button data-flip="${esc(sc.name)}">Flip</button><button data-disc="${esc(sc.name)}">Discard</button>
+      ${sc.circular?`<button data-lin="${esc(sc.name)}">Linearise</button>`:`<button data-circ="${esc(sc.name)}" title="close the circle (gap / negative = overlap)">Circularise…</button>`}</div>
+      ${sc.circular?`<div class="row">start: ${geneOpts?`<select class="gsel">${geneOpts}</select><button data-ogene="${esc(sc.name)}">at gene</button>`:''}<input class="opos" type="number" placeholder="pos" style="width:80px"><button data-opos="${esc(sc.name)}">at pos</button></div>`:''}</div>`});
     if(S.discarded.length) h+=`<div class="card muted">Discarded: ${S.discarded.map(d=>esc(d.name)).join(', ')}</div>`;
   } else {
     h=S.log.slice().reverse().map(l=>`<div class="item"><div class="t"><span>${esc(l.op)}</span><span class="muted">${esc(l.t)}</span></div><div class="muted" style="font-family:var(--mono);font-size:11px">${esc(JSON.stringify(Object.fromEntries(Object.entries(l).filter(([k])=>k!=='t'&&k!=='op'))))}</div></div>`).join('')||'<div class="card muted">No edits yet.</div>';
@@ -160,7 +165,7 @@ function renderList(){
 $('#tabs').onclick=e=>{const t=e.target.dataset.t;if(!t)return;tab=t;document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));renderList()};
 $('#q').oninput=renderList; $('#hideDone').onchange=renderList;
 $('#list').onclick=async e=>{
-  const it=e.target.closest('[data-c],[data-b],[data-p],[data-brk],[data-flip],[data-disc]'); if(!it)return;
+  const it=e.target.closest('[data-c],[data-b],[data-p],[data-brk],[data-flip],[data-disc],[data-lin],[data-circ],[data-ogene],[data-opos]'); if(!it)return;
   const d=it.dataset;
   if(d.c) selectCand(S.candidates.find(c=>c.id===d.c));
   else if(d.b){const b=S.hotspots[+d.b];showBreak(b)}
@@ -168,6 +173,11 @@ $('#list').onclick=async e=>{
   else if(d.brk){const [s,i]=d.brk.split('|');doOp({op:'break',scaffold:s,after:+i})}
   else if(d.flip) doOp({op:'flip',scaffold:d.flip});
   else if(d.disc) doOp({op:'discard',scaffold:d.disc,reason:'manual'});
+  else if(d.lin) doOp({op:'linearise',scaffold:d.lin});
+  else if(d.circ){const g=prompt('Closing gap in bp (negative = overlap to trim):','0');if(g!==null)doOp({op:'circularise',scaffold:d.circ,gap:+g,reason:'manual'})}
+  else if(d.ogene){const r=await api('/api/op',{op:'set_origin',scaffold:d.ogene,gene:it.parentElement.querySelector('.gsel').value});
+    if(r.ok){toast(`start at ${r.result.pos}${r.result.strand} (${r.result.votes} k-mer votes)`);load(true)}else toast(r.error,1)}
+  else if(d.opos) doOp({op:'set_origin',scaffold:d.opos,pos:+it.parentElement.querySelector('.opos').value,strand:'+'});
 };
 async function doOp(o){const r=await api('/api/op',o);if(!r.ok){toast(r.error,1);return false}toast(o.op+' done');await load(true);return true}
 
@@ -188,8 +198,8 @@ function selectCand(c){
     <tr><td class="muted">&nbsp;&nbsp;share · orientation</td><td>${c.hic_norm} · ${Math.round(c.hic_orient*100)}%</td></tr>
     ${c.via.length?`<tr><td><span class="sw" style="background:${css('--ev-path')}"></span> through repeat</td><td>${esc(c.via.join(','))} (${c.via_reads} reads)</td></tr>`:''}
    </table>
-   <div class="row">gap <input id="gapIn" type="number" value="${c.gap}" style="width:80px"> bp ${c.via.length?'<span class="muted">+ copy of '+esc(c.via.join(','))+'</span>':''}</div>
-   <div class="row"><button class="primary" id="bAcc">Accept join (a)</button><button id="bRej">Reject (x)</button></div>
+   <div class="row">gap <input id="gapIn" type="number" value="${c.gap}" style="width:80px"> bp ${c.gap!==c.gap_reads?`<span class="muted" title="read-based estimate snapped to the exact sequence overlap">(reads: ${c.gap_reads})</span>`:''} ${c.via.length?'<span class="muted">+ copy of '+esc(c.via.join(','))+'</span>':''}</div>
+   <div class="row"><button class="primary" id="bAcc">${sameScaffold(c)?'Close circle (a)':'Accept join (a)'}</button><button id="bRej">Reject (x)</button></div>
    <div class="muted" style="margin-top:6px;font-size:12px">Negative gap = overlap, trimmed from the second contig on export.</div></div>
    <div class="card" id="endinfo"></div>`;
   $('#bAcc').onclick=acceptSel; $('#bRej').onclick=rejectSel;
@@ -198,6 +208,8 @@ function selectCand(c){
     $('#endinfo').innerHTML='<h3>Soft-clip consensus beyond each end</h3>'+ds.map(d=>`<div class="muted">${esc(d.end.join(':'))}: ${d.n_clips} clipped reads, longest ${d.clip_lengths[0]||0} bp</div><pre class="seq">${esc(d.consensus.slice(0,600))||'—'}</pre>`).join('')+'<div class="muted" style="font-size:11px">Naive column consensus: reliable for HiFi/Illumina; indicative only for ONT/CLR.</div>';
   });
 }
+function scaffoldOf(end){for(const sc of S.scaffolds){for(const p of sc.parts){const pc=S.pieces[p.piece];if(!pc.copy&&pc.src===end[0])return sc.name}}}
+function sameScaffold(c){return c.a[0]===c.b[0]||scaffoldOf(c.a)===scaffoldOf(c.b)}
 async function acceptSel(){if(!sel)return;const ok=await doOp({op:'join',id:sel.id,gap:+$('#gapIn').value,reason:'manual'});if(ok)nextCand(1)}
 function rejectSel(){if(!sel)return;rejected.add(sel.id);toast('rejected '+sel.id);nextCand(1)}
 function nextCand(d){const open=S.candidates.filter(c=>!isDone(c)&&!rejected.has(c.id));if(!open.length)return;
