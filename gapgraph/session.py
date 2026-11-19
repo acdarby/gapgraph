@@ -9,13 +9,13 @@ from .consensus import Pileup, DEFAULT_THRESHOLDS, PROBLEM_LABELS
 from .hic import HiC, read_pairs
 from .project import Project, ProjectError
 from .working import Working
-from . import realign
+from . import realign, foldback
 from collections import Counter
 
 
 class Session:
     def __init__(self, gfa=None, fasta=None, alignments=(), paf=(), pairs=None, project=None,
-                 hic_end_bin=20000, start_fasta=None):
+                 hic_end_bin=20000, start_fasta=None, foldback_mode="trim"):
         """alignments / paf: lists of (path, platform) with platform in
         illumina | hifi | clr | ont."""
         if gfa:
@@ -33,9 +33,24 @@ class Session:
             raise ValueError(f"no sequence for segments {missing[:5]} -- pass --fasta")
         # the inputs, never modified
         self.orig_graph, self.orig_seqs = graph, seqs
-        self.orig_stores = {}
+        self.raw_stores = {}
         for path, plat in alignments:
-            self.orig_stores.setdefault(plat, AlignmentStore()).add(read_alignments(path, plat))
+            self.raw_stores.setdefault(plat, AlignmentStore()).add(read_alignments(path, plat))
+        # foldback contig ends on the input: reads inside their arms only look folded
+        excl = {}
+        for name, sq in seqs.items():
+            for h in (foldback.end_foldback(sq, side) for side in "RL"):
+                if h:
+                    lo, hi = (h["fold"] - 200, len(sq)) if h["side"] == "R" else (0, h["fold"] + 200)
+                    excl.setdefault(name, []).append((lo, hi))
+        # foldback reads: detected once on the input, handled per mode
+        self.fb_stats = {plat: {} for plat in self.raw_stores}
+        self.fb_events = {plat: foldback.detect_read_foldbacks(st, seqs, exclude=excl, stats=self.fb_stats[plat])
+                          for plat, st in self.raw_stores.items()}
+        self.foldback_mode = foldback_mode
+        self.orig_stores = {plat: foldback.apply_mode(st, self.fb_events[plat], foldback_mode)
+                            for plat, st in self.raw_stores.items()}
+        self._fb_cache = {}
         self.orig_hits = []
         for path, plat in paf:
             self.orig_hits.extend(read_paf(path, plat))
@@ -48,6 +63,28 @@ class Session:
             self.project.load()
         self._wcache = {}
         self.rebuild()
+
+    def set_foldback_mode(self, mode):
+        if mode not in ("keep", "trim", "drop"):
+            raise ValueError("foldback mode must be keep, trim or drop")
+        self.foldback_mode = mode
+        self.orig_stores = {plat: foldback.apply_mode(st, self.fb_events[plat], mode)
+                            for plat, st in self.raw_stores.items()}
+        self._wcache.clear()
+        self.rebuild()
+
+    def _scan_contig_foldbacks(self):
+        out = []
+        evs = [e for v in self.fb_events.values() for e in v]
+        for name, seq in self.seqs.items():
+            if name in self.W.circular:
+                continue
+            key = hash(seq)
+            if key not in self._fb_cache:
+                self._fb_cache[key] = [h for h in (foldback.end_foldback(seq, s) for s in "RL") if h]
+            for h in self._fb_cache[key]:
+                out.extend(foldback.contig_foldbacks({name: seq}, self.stores, events=evs, hits=[dict(h)]))
+        return out
 
     def rebuild(self):
         """Derive the working assembly from the project and recompute evidence."""
@@ -121,6 +158,7 @@ class Session:
                 elif "circular-contig" not in c["flags"]:
                     c["flags"].append("circular-contig")
         self.cand_by_id = {c["id"]: c for c in self.candidates}
+        self.contig_foldbacks = self._scan_contig_foldbacks()
         self._explain_hotspots()
 
     def _explain_hotspots(self, tol=50):
@@ -136,9 +174,14 @@ class Session:
             if g is not None and g < 0 and c["score"] >= 6:
                 for name, side in (c["a"], c["b"]):
                     bounds.setdefault(name, []).append(-g if side == "L" else self.lengths[name] + g)
+        folds = {}
+        for fb in getattr(self, "contig_foldbacks", []):
+            folds.setdefault(fb["contig"], []).append(fb["fold"])
         for h in self.hotspots:
             if any(abs(h["pos"] - b) <= tol for b in bounds.get(h["contig"], [])):
                 h["explained"] = "end-overlap boundary"
+            elif any(abs(h["pos"] - b) <= tol for b in folds.get(h["contig"], [])):
+                h["explained"] = "foldback fold point"
         self.hotspots.sort(key=lambda h: ("explained" in h, -h["reads"]))
 
     # ------------------------------------------------------------ API views
@@ -165,6 +208,9 @@ class Session:
             "log": self.project.log[-50:],
             "platforms": sorted(self.stores),
             "has_hic": self.hic is not None,
+            "foldbacks": {"mode": self.foldback_mode, "contigs": self.contig_foldbacks,
+                          "reads": {plat: foldback.summarise(ev, self.raw_stores[plat], self.fb_stats[plat])
+                                    for plat, ev in self.fb_events.items()}},
             "circular": self.circular,
             "start_genes": list(self.start_genes),
             "insert_stats": self.insert_stats,
@@ -516,6 +562,11 @@ class Session:
             return P.flip(req["scaffold"])
         if op == "undo":
             return P.undo()
+        if op == "remove_foldback":
+            return self._remove_foldback(req["contig"], req["side"])
+        if op == "foldback_mode":
+            self.set_foldback_mode(req["mode"])
+            return {"mode": req["mode"]}
         if op == "auto":
             return self._auto(float(req.get("min_score", 6)), circularise=req.get("circularise", True))
         raise ValueError(f"unknown op {op}")
@@ -537,10 +588,41 @@ class Session:
         self.rebuild()
         return res
 
+    def _remove_foldback(self, w, side):
+        """Cut a contig at its fold point and discard the folded arm (one undo)."""
+        fb = next((f for f in self.contig_foldbacks if f["contig"] == w and f["side"] == side), None)
+        if fb is None:
+            raise ProjectError(f"no foldback at {w}:{side}")
+        loc = self.W.locate(w, fb["fold"])
+        if loc is None:
+            raise ProjectError("fold point outside the contig")
+        i, piece, rel, off = loc
+        P = self.project
+        p = P.pieces[piece]
+        src_cut = p["start"] + rel
+        orient = self.W.comps[w][i][1][4]
+        arm_right_in_src = (side == "R") == (orient == "+")
+        a0, a1 = (src_cut, p["end"]) if arm_right_in_src else (p["start"], src_cut)
+        with P.transaction("remove_foldback", contig=w, side=side, fold=fb["fold"], arm=fb["arm"]):
+            P.split_contig(piece, rel, reason="foldback")
+            arm_piece = f"{p['src']}:{a0}-{a1}"
+            si, _ = P.find(arm_piece)
+            P.discard(P.scaffolds[si]["name"], reason=f"foldback arm {fb['arm']} bp")
+        return {"removed": fb["arm"], "contig": w, "side": side}
+
     def _auto(self, min_score=6.0, circularise=True, min_circ_score=4.0):
-        """Greedy: accept best unambiguous candidates first, then close circles
-        and rotate to the start gene (a starting point for curation)."""
+        """Greedy: remove confident foldback contig ends, accept the best
+        unambiguous candidates, then close circles and rotate to the start
+        gene (a starting point for curation)."""
         done, rotated = [], []
+        removed = []
+        for _ in range(50):
+            fb = next((f for f in self.contig_foldbacks if f["recommend"] == "remove"), None)
+            if fb is None:
+                break
+            self._remove_foldback(fb["contig"], fb["side"])
+            removed.append({k: fb[k] for k in ("contig", "side", "fold", "arm")})
+            self.rebuild()
         # translate every candidate to project ends *before* the layout changes
         tr = {}
         for c in self.candidates:
@@ -598,4 +680,4 @@ class Session:
                     self.project.set_origin(name, hit["pos"], hit["strand"],
                                             reason=f"{hit['gene']} votes={hit['votes']}")
                     rotated.append({"scaffold": name, **hit})
-        return {"joined": done, "circularised": circles, "rotated": rotated}
+        return {"foldbacks_removed": removed, "joined": done, "circularised": circles, "rotated": rotated}

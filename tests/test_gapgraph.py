@@ -362,3 +362,73 @@ def test_clip_consensus_from_noisy_reads():
     assert len(cons) > 800
     x, y = joinedit.banded_align(cons, truth[:len(cons)])
     assert sum(p == q for p, q in zip(x, y)) / len(x) > 0.99
+
+
+# --------------------------------------------------------------------- foldbacks
+from gapgraph import foldback
+
+
+def test_end_foldback_geometry():
+    import random
+    rng = random.Random(2)
+    g = "".join(rng.choice("ACGT") for _ in range(30000))
+    hit = foldback.end_foldback(g + revcomp(g[-1500:]), "R")
+    assert hit["fold"] == 30000 and hit["arm"] == 1500 and hit["identity"] == 1.0
+    loop = "".join(rng.choice("ACGT") for _ in range(30))
+    assert abs(foldback.end_foldback(g + loop + revcomp(g[-1500:]), "R")["fold"] - 30015) <= 1
+    assert foldback.end_foldback(revcomp(g[:2000]) + g, "L")["fold"] == 2000
+    assert foldback.end_foldback(g, "R") is None and foldback.end_foldback(g, "L") is None
+
+
+def test_real_hairpin_with_spanning_reads_is_not_auto_removed():
+    import random
+    from gapgraph.alignments import AlignmentStore
+    rng = random.Random(3)
+    g = "".join(rng.choice("ACGT") for _ in range(8000))
+    seq = g + revcomp(g[-1500:])
+    fold = len(g)
+    reads = [_aln(f"s{i}", "c", fold - 400 + i, "800M", seq[fold - 400 + i:fold + 400 + i]) for i in range(10)]
+    res = foldback.contig_foldbacks({"c": seq}, {"ont": AlignmentStore().add(reads)})
+    assert res and res[0]["spanning_reads"] == 10 and res[0]["recommend"] == "check"
+
+
+@pytest.fixture(scope="module")
+def fbsim(tmp_path_factory):
+    d = str(tmp_path_factory.mktemp("fb"))
+    r = simulate_circular(d, scale=0.4, seed=5, foldback_reads=0.08, foldback_contig=True)
+    return d, r
+
+
+def test_foldback_reads_detected_exactly_and_trimmed(fbsim):
+    d, r = fbsim
+    S = _session(r, start_fasta=r["start"])
+    ev = S.fb_events["ont"]
+    assert len(ev) == r["truth"]["foldback_reads"] > 0
+    assert S.fb_events["illumina"] == []
+    assert S.fb_stats["ont"]["at_contig_foldback"] > 0      # hairpin-arm reads not miscounted
+    fb_names = {e["qname"] for e in ev}
+    left = [a for a in S.orig_stores["ont"].all() if a.qname in fb_names]
+    assert len(left) == len(fb_names)                        # folded arm alignment removed
+    assert all(a.rclip_soft == 0 and a.rclip > 0 for a in left)  # folded arm hard-clipped
+    S.set_foldback_mode("drop")
+    assert not [a for a in S.orig_stores["ont"].all() if a.qname in fb_names]
+
+
+def test_foldback_contig_end_removed_and_genome_exact(fbsim, tmp_path):
+    d, r = fbsim
+    S = _session(r, start_fasta=r["start"])
+    t = r["truth"]["foldback_contig"]
+    fb = S.contig_foldbacks
+    assert len(fb) == 1 and (fb[0]["contig"], fb[0]["side"], fb[0]["fold"], fb[0]["arm"]) == \
+        (t["contig"], t["side"], t["fold"], t["arm"])
+    assert fb[0]["recommend"] == "remove"
+    S.op({"op": "remove_foldback", "contig": "chr_1", "side": "R"})
+    assert not S.contig_foldbacks and len(S.project.discarded) == 1
+    S.op({"op": "undo"})                                     # one undo reverses split + discard
+    assert "chr_1" in S.seqs and not S.project.discarded
+    res = S.auto_scaffold()
+    assert res["foldbacks_removed"] and len(res["circularised"]) == 2
+    S.project.export(str(tmp_path / "fin"))
+    truth = read_fasta(os.path.join(d, "truth.fasta"))
+    out = read_fasta(str(tmp_path / "fin.fasta"))
+    assert sorted(out.values(), key=len) == sorted(truth.values(), key=len)

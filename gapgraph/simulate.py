@@ -257,7 +257,16 @@ def _mutate(rng, s, rate):
     return "".join(rng.choice([x for x in "ACGT" if x != c]) if rng.random() < rate else c for c in s)
 
 
-def simulate_circular(outdir, seed=11, scale=0.5):
+def _add_clip(cigar, n):
+    """Append n soft-clipped bases to a cigar string (merging a trailing S)."""
+    import re
+    m = re.search(r"(\d+)S$", cigar)
+    if m:
+        return cigar[:m.start()] + f"{int(m.group(1)) + n}S"
+    return cigar + f"{n}S"
+
+
+def simulate_circular(outdir, seed=11, scale=0.5, foldback_reads=0.0, foldback_contig=False, fold_arm=1500):
     """Chromosome (dnaA at base 1 in the truth) + plasmid.
 
     Assembly as an assembler might leave it:
@@ -278,9 +287,15 @@ def simulate_circular(outdir, seed=11, scale=0.5):
     x_start = o + s1 - brk_ovl
     X = chrom[x_start:] + chrom[:o + ori_ovl]
     contigs = {"chr_1": chrom[o:o + s1], "chr_2": revcomp(X), "plasmid": plasmid + plasmid[:p_ovl]}
+    if foldback_contig:
+        # assembler hairpin: chr_1 runs into the reverse complement of its own end
+        contigs["chr_1"] += revcomp(chrom[o + s1 - fold_arm:o + s1])
     # blocks are contiguous in "unrolled" molecule coordinates (copies of the
     # circle laid end to end), so reads crossing the origin align as one piece
     chrom_blocks = [("chr_1", 0, o, s1, "+"), ("chr_2", 0, x_start, len(X), "-")]
+    if foldback_contig:
+        chrom_blocks.append(("chr_1", s1, o + s1 - fold_arm, fold_arm, "-"))
+    n_fold = 0
     plasmid_blocks = [("plasmid", 0, 0, P + p_ovl, "+")]
 
     write_fasta([("chromosome", chrom), ("plasmid", plasmid)], os.path.join(outdir, "truth.fasta"))
@@ -307,6 +322,24 @@ def simulate_circular(outdir, seed=11, scale=0.5):
                 for _ in range(int(M * p["depth"] / (sum(p["len"]) / 2))):
                     ln = rng.randint(*p["len"])
                     gs = rng.randrange(M)
+                    if (foldback_reads and mol is chrom and rng.random() < foldback_reads
+                            and o + 500 <= gs and gs + ln <= o + s1 - fold_arm - 500):
+                        # foldback read: template arm, hairpin, then the complement strand read back
+                        blk = ("chr_1", 0, o, s1, "+")
+                        m = rng.randint(ln // 3, ln)
+                        a1 = _block_alignment(_simulate_read(rng, ext, gs, gs + ln, p), blk, "x", False)
+                        a2 = _block_alignment(_simulate_read(rng, ext, gs + ln - m, gs + ln, p), blk, "x", False)
+                        if a1 and a2:
+                            qname = f"{plat}_{r}"
+                            r += 1
+                            n_fold += 1
+                            hp = _rand_seq(rng, 40)
+                            read = a1["seq"] + hp + revcomp(a2["seq"])
+                            fh.write(f"{qname}\t0\t chr_1\t{a1['pos'] + 1}\t60\t{_add_clip(a1['cigar'], 40 + len(a2['seq']))}"
+                                     f"\t*\t0\t0\t{read}\t*\n".replace("\t chr_1", "\tchr_1"))
+                            fh.write(f"{qname}\t{16 | 2048}\tchr_1\t{a2['pos'] + 1}\t60\t{_add_clip(a2['cigar'], 40 + len(a1['seq']))}"
+                                     f"\t*\t0\t0\t{revcomp(read)}\t*\n")
+                            continue
                     ops = _simulate_read(rng, ext, gs, gs + ln, p)
                     rev = rng.random() < 0.5
                     qname = f"{plat}_{r}"
@@ -319,7 +352,9 @@ def simulate_circular(outdir, seed=11, scale=0.5):
                                  f"\t*\t0\t0\t{a['seq']}\t*\n")
     truth = {"chromosome_length": G, "plasmid_length": P,
              "breaks": "chr_1:R ~ chr_2:R overlap 300; chr_2:L ~ chr_1:L overlap 1000 (origin)",
-             "plasmid_end_overlap": p_ovl, "dnaA": "chromosome base 1, + strand"}
+             "plasmid_end_overlap": p_ovl, "dnaA": "chromosome base 1, + strand",
+             "foldback_reads": n_fold,
+             "foldback_contig": {"contig": "chr_1", "side": "R", "fold": s1, "arm": fold_arm} if foldback_contig else None}
     import json
     with open(os.path.join(outdir, "truth.json"), "w") as fh:
         json.dump(truth, fh, indent=1)

@@ -117,6 +117,40 @@ Things to watch with real bacterial data:
 - **Join Editor:** they align to the partner contig at the current gap. Contig A's clips sit in register under contig B's sequence and vice versa, and mismatches are highlighted. Changing the gap re-aligns them.
 - **Unaligned tails:** clip sequence past the point where the alignment stops being supported (X-drop, typically adapter or junk) is drawn faded.
 
+## Foldbacks (reads and contig ends)
+
+The editor's **Breaks** tab, `gapgraph report` and auto-finish all handle foldbacks.
+
+**Foldback reads.** These are mostly a nanopore artefact: the complementary strand of the same molecule follows the template through the pore, so the read is a sequence, a short hairpin, then the reverse complement. Aligners report it in one of two ways:
+- a primary and supplementary pair on **opposite strands of the same place**;
+- one alignment whose soft clip is the reverse complement of the reference just before the clip point.
+
+Left in, the folded arm double-counts depth and looks like evidence for inversions, mis-joins and false joins. gapgraph detects both forms on load and handles them with `--foldback-mode` (also switchable in the editor):
+
+| Mode | Effect |
+|---|---|
+| `trim` (default) | keep the longer arm, drop the folded arm's alignment and hard-clip its bases |
+| `keep` | leave everything as it is, for inspection |
+| `drop` | remove the read entirely |
+
+Two cases are deliberately *not* counted as foldback reads:
+- reads inside the arm of a contig foldback, which only look folded because the reference is;
+- piles of folded reads at one position, which point to a palindrome in the reference. Real foldback reads fall at random positions.
+
+**Foldback contig ends.** Assemblers sometimes finish a contig with a hairpin, where the last n bases are the reverse complement of the n before them.
+- **Detection:** a fold at point f makes the window match its own reverse complement along a single diagonal (S[i] = R[i + W − 2f]). One k-mer pass therefore finds the fold point and arm length, including when there is a short loop between the arms, and an alignment then confirms the inversion.
+- **Read evidence:** each call counts reads that run straight through the fold.
+  - An assembler hairpin has none, so it is marked **remove**.
+  - Reads spanning the fold mean it may be real, e.g. a hairpin telomere on a linear replicon such as a *Borrelia* linear plasmid, or a terminal inverted repeat. It is then marked **check** and left alone by auto-finish.
+- **Removal:** **Remove arm** cuts the contig at the fold and discards the arm in a single edit that one undo reverses. Auto-finish removes confident hairpins before joining.
+
+```bash
+gapgraph simulate --circular --foldbacks demo_fb/     # 5% ONT foldback reads + a 1.5 kb hairpin on chr_1
+gapgraph report --gfa demo_fb/assembly.gfa --aln illumina:demo_fb/illumina.sam --aln ont:demo_fb/ont.sam
+```
+
+On that simulation, gapgraph finds exactly the simulated foldback reads and the hairpin's fold point and arm length. Auto-finish still reproduces both replicons base for base.
+
 ## The Gap5 tools, rebuilt
 
 These follow the Gap5 manual (Staden package Texinfo sources, `staden/trunk/doc/manual/gap5*.texi` in the Staden SourceForge repository), adapted to graph assemblies and mixed short- and long-read data.

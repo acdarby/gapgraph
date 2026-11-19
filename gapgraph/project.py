@@ -45,8 +45,26 @@ class Project:
         self.discarded = st.get("discarded", [])
 
     def _checkpoint(self, op, **kw):
-        self._undo.append(copy.deepcopy((self.pieces, self.scaffolds, self.discarded, self._counter)))
+        if not getattr(self, "_tx", 0):
+            self._undo.append(copy.deepcopy((self.pieces, self.scaffolds, self.discarded, self._counter)))
         self.log.append({"t": time.strftime("%Y-%m-%d %H:%M:%S"), "op": op, **kw})
+
+    def transaction(self, op, **kw):
+        """Group several operations so that one undo reverses them all."""
+        proj = self
+
+        class _Tx:
+            def __enter__(self_):
+                proj._checkpoint(op, **kw)
+                proj._tx = getattr(proj, "_tx", 0) + 1
+
+            def __exit__(self_, *exc):
+                proj._tx -= 1
+                if exc[0] is not None and not proj._tx:   # roll back a failed transaction
+                    proj.pieces, proj.scaffolds, proj.discarded, proj._counter = proj._undo.pop()
+                proj.save()
+                return False
+        return _Tx()
 
     def undo(self):
         if not self._undo:

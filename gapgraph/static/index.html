@@ -82,7 +82,7 @@ pre.seq{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:b
 </header>
 <aside id="left">
   <div class="tabs" id="tabs">
-    <button data-t="joins" class="on">Joins</button><button data-t="breaks">Breaks</button>
+    <button data-t="joins" class="on">Joins</button><button data-t="breaks" title="clip hotspots and foldbacks">Breaks</button>
     <button data-t="problems">Problems</button><button data-t="paths">Paths</button><button data-t="scaffolds">Scaffolds</button><button data-t="log">Log</button>
   </div>
   <div class="filters" id="filters">
@@ -126,7 +126,8 @@ async function load(keepLayout){
   S=await api('/api/overview');
   S.segIdx={}; S.graph.segments.forEach((s,i)=>S.segIdx[s.name]=i);
   const nc=Object.values(S.working).filter(w=>w.circular).length;
-  $('#stats').textContent=`${S.graph.segments.length} contigs${nc?` (${nc} circular)`:''} · ${S.candidates.length} candidate joins · ${S.hotspots.length} break hotspots · ${S.platforms.join('/')||'no reads'}${S.has_hic?' + Hi-C':''}`;
+  const nfb=(S.foldbacks&&S.foldbacks.contigs.length)||0;
+  $('#stats').textContent=`${S.graph.segments.length} contigs${nc?` (${nc} circular)`:''}${nfb?` · ${nfb} foldback end${nfb>1?'s':''}`:''} · ${S.candidates.length} candidate joins · ${S.hotspots.length} break hotspots · ${S.platforms.join('/')||'no reads'}${S.has_hic?' + Hi-C':''}`;
   $('#tcontig').innerHTML=S.graph.segments.map(x=>`<option>${esc(x.name)}</option>`).join('');if(T.contig)$('#tcontig').value=T.contig;
   if(!keepLayout) G.init(); else G.draw();
   renderList(); drawHiC();
@@ -144,10 +145,21 @@ function renderList(){
       <div class="chips">${c.evidence.map(e=>`<span class="chip ev" style="background:${css(EV[e])}">${e}</span>`).join('')}
       ${c.flags.map(f=>`<span class="chip flag">${esc(f)}</span>`).join('')}${isDone(c)?'<span class="chip" style="color:var(--ok)">joined</span>':''}</div></div>`});
   } else if(tab==='breaks'){
+    // ---- foldbacks: contig hairpins + read foldback QC
+    const FB=S.foldbacks||{contigs:[],reads:{},mode:'trim'};
+    h+=`<div class="card"><h3>Foldback contig ends</h3>${FB.contigs.length?FB.contigs.filter(f=>!q||f.contig.includes(q)).map(f=>`
+      <div class="item" data-fbc="${esc(f.contig)}" data-fbx="${f.fold}" style="padding:6px 0"><div class="t"><span>${esc(f.contig)}:${f.side} fold @${f.fold}</span><span>${fmt(f.arm)} arm</span></div>
+      <div class="chips"><span class="chip">${(f.identity*100).toFixed(1)}% inverted</span><span class="chip" title="reads running straight through the fold point">${f.spanning_reads}/${f.depth} reads span fold</span>
+      <span class="chip" style="color:${f.recommend==='remove'?'var(--bad)':'var(--warn)'};border-color:currentColor">${f.recommend==='remove'?'assembler hairpin':'reads span it — real hairpin/TIR?'}</span></div>
+      <div class="row"><button data-fbrm="${esc(f.contig)}|${f.side}" ${f.recommend==='remove'?'class="primary"':''}>Remove ${fmt(f.arm)} arm</button></div></div>`).join(''):'<div class="muted">None found.</div>'}</div>
+      <div class="card"><h3>Foldback reads</h3><table class="kv">${Object.entries(FB.reads).map(([pl,r])=>`<tr><td>${esc(pl)}</td><td>${r.foldbacks} of ${r.reads} (${(r.fraction*100).toFixed(2)}%)${r.foldbacks?` · arm ~${fmt(r.median_arm)}`:''}</td></tr>${r.at_contig_foldback||r.reference_palindrome_piles?`<tr><td class="muted">&nbsp;&nbsp;not counted</td><td class="muted" title="reads that only look folded because the reference is">${r.at_contig_foldback} in contig hairpins · ${r.reference_palindrome_piles} in palindrome piles</td></tr>`:''}`).join('')}</table>
+      <div class="row">mode <select id="fbmode">${['trim','keep','drop'].map(m=>`<option ${m===FB.mode?'selected':''}>${m}</option>`).join('')}</select>
+      <span class="muted" style="font-size:12px">trim = keep the longer arm, hard-clip the folded arm</span></div></div><div class="card"><h3>Clip hotspots</h3></div>`;
     S.hotspots.filter(b=>!q||b.contig.includes(q)).forEach((b,i)=>{
       h+=`<div class="item" data-b="${i}"><div class="t"><span>${esc(b.contig)}:${b.pos}</span><span>${b.reads} reads</span></div>
       <div class="chips"><span class="chip">${b.platform}</span><span class="chip">clip ${b.clip_side}</span><span class="chip">cov ${b.mean_cov}×</span>${b.explained?`<span class="chip" style="color:var(--ok)">${esc(b.explained)}</span>`:''}</div></div>`});
-    if(!h) h='<div class="card muted">No internal soft-clip hotspots.</div>';
+    if(!S.hotspots.length) h+='<div class="card muted">No internal soft-clip hotspots.</div>';
+    L.innerHTML=h;$('#fbmode').onchange=e=>doOp({op:'foldback_mode',mode:e.target.value});return;
   } else if(tab==='problems'){
     const pt=S._ptype||'contig';
     h=`<div class="filters"><select id="probType">${Object.entries(S.problem_types).map(([k,v])=>`<option value="${k}" ${k===pt?'selected':''}>${esc(v)}</option>`).join('')}</select>
@@ -181,6 +193,9 @@ function renderList(){
 $('#tabs').onclick=e=>{const t=e.target.dataset.t;if(!t)return;tab=t;document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));renderList()};
 $('#q').oninput=renderList; $('#hideDone').onchange=renderList;
 $('#list').onclick=async e=>{
+  const fr=e.target.closest('[data-fbrm]');if(fr){const [c,sd]=fr.dataset.fbrm.split('|');
+    if(confirm(`Remove the foldback arm at ${c}:${sd}?\nThe contig is cut at the fold point and the folded arm discarded (one undo).`))doOp({op:'remove_foldback',contig:c,side:sd});return}
+  const fc=e.target.closest('[data-fbc]');if(fc&&e.target.tagName!=='BUTTON'){E.single(fc.dataset.fbc,+fc.dataset.fbx);E.eds[0].cursor=+fc.dataset.fbx;return}
   const pc=e.target.closest('[data-pc]');if(pc){E.single(pc.dataset.pc,+pc.dataset.ps);const ed=E.eds[0];ed.cursor=+pc.dataset.ps;return}
   const it=e.target.closest('[data-c],[data-b],[data-p],[data-brk],[data-flip],[data-disc],[data-lin],[data-circ],[data-ogene],[data-opos]'); if(!it)return;
   const d=it.dataset;
