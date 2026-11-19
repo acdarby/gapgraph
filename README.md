@@ -176,7 +176,7 @@ These follow the Gap5 manual (Staden package Texinfo sources, `staden/trunk/doc/
 ## Limits of this prototype
 
 - Alignments are held in memory per contig. For large genomes, the next step is pysam region fetches from indexed BAM.
-- The soft-clip consensus is a naive column vote. It works for HiFi and Illumina, but is only indicative for ONT/CLR; a POA consensus would be the next step.
+- The clip consensus comes from iterated star alignment (edlib). On simulated ONT reads at ~6% error, 15–20 clips give a consensus that is more than 99% correct. Real ONT errors are more systematic (homopolymers), so a POA consensus would be more robust. The *Soft-clip consensus* box in the side panel still uses the older naive column vote.
 - Gap filling only writes Ns. The aligned clip consensus is shown in the gap, but it is not yet spliced into the exported sequence.
 - After each edit the working assembly is rebuilt. Unchanged contigs are reused, so this is quick for a bacterial genome (about 1–2 s) but not instant for large genomes.
 - There is no base-level editing. Polishing belongs to dedicated tools.
