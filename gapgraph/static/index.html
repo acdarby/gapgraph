@@ -125,18 +125,13 @@ const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',
 async function load(keepLayout){
   S=await api('/api/overview');
   S.segIdx={}; S.graph.segments.forEach((s,i)=>S.segIdx[s.name]=i);
-  // which original ends are already joined in a scaffold?
-  S.joinedEnds=new Set();
-  for(const sc of S.scaffolds){sc.parts.forEach((p,i)=>{const pc=S.pieces[p.piece];const src=pc.src;
-    const first=i===0,last=i===sc.parts.length-1;
-    const leftEnd=p.orient==='+'?'L':'R', rightEnd=p.orient==='+'?'R':'L';
-    if(!first||sc.circular) S.joinedEnds.add(src+':'+leftEnd); if(!last||sc.circular) S.joinedEnds.add(src+':'+rightEnd);});}
-  $('#stats').textContent=`${S.graph.segments.length} contigs · ${S.scaffolds.length} scaffolds · ${S.candidates.length} candidate joins · ${S.hotspots.length} break hotspots · ${S.platforms.join('/')||'no reads'}${S.has_hic?' + Hi-C':''}`;
+  const nc=Object.values(S.working).filter(w=>w.circular).length;
+  $('#stats').textContent=`${S.graph.segments.length} contigs${nc?` (${nc} circular)`:''} · ${S.candidates.length} candidate joins · ${S.hotspots.length} break hotspots · ${S.platforms.join('/')||'no reads'}${S.has_hic?' + Hi-C':''}`;
   $('#tcontig').innerHTML=S.graph.segments.map(x=>`<option>${esc(x.name)}</option>`).join('');if(T.contig)$('#tcontig').value=T.contig;
   if(!keepLayout) G.init(); else G.draw();
   renderList(); drawHiC();
 }
-const isDone=c=>S.joinedEnds.has(c.a.join(':'))&&S.joinedEnds.has(c.b.join(':'));
+const isDone=c=>!!c.done;
 
 // ------------------------------------------------------------------ left list
 function renderList(){
@@ -201,7 +196,19 @@ $('#list').onclick=async e=>{
     if(r.ok){toast(`start at ${r.result.pos}${r.result.strand} (${r.result.votes} k-mer votes)`);load(true)}else toast(r.error,1)}
   else if(d.opos) doOp({op:'set_origin',scaffold:d.opos,pos:+it.parentElement.querySelector('.opos').value,strand:'+'});
 };
-async function doOp(o){const r=await api('/api/op',o);if(!r.ok){toast(r.error,1);return false}toast(o.op+' done');await load(true);return true}
+async function doOp(o){const r=await api('/api/op',o);if(!r.ok){toast(r.error,1);return false}
+  const res=r.result||{},nw=res.new||[],gone=res.gone||[];
+  toast(`${o.op} done${nw.length?' · new: '+nw.join(', '):''}${gone.length?' · replaced: '+gone.join(', '):''}`);
+  await load(!(nw.length||gone.length));
+  if(nw.length||gone.length){
+    $('#detail').innerHTML=`<div class="card"><h3>${esc(o.op)}</h3><div class="muted">${nw.length?'New contig'+(nw.length>1?'s':'')+': <b>'+nw.map(esc).join(', ')+'</b><br>':''}${gone.length?'Replaced: '+gone.map(esc).join(', '):''}</div><p class="muted">Evidence has been recomputed for the new contig ends. Press <b>j</b> for the next join.</p></div>`;
+    // reopen the editor on the contig that now holds the edited region
+    const target=nw[0];
+    if(target&&S.segIdx[target]!=null){const L=S.graph.segments[S.segIdx[target]].length,J=S.working[target].junctions;
+      // split: show the new end; join: show the (last) junction with reads spanning it
+      const at=o.op==='split'?L:(J.length?J[J.length-1]:L/2);E.single(target,at);if(E.eds[0])E.eds[0].cursor=o.op==='split'?null:at;sel=null;G.sel=null}
+    else if(E.current&&S.segIdx[E.current]==null)E.clear();}
+  return r}
 
 // ------------------------------------------------------------------ detail panel
 function selectCand(c){
@@ -231,24 +238,24 @@ function selectCand(c){
     $('#endinfo').innerHTML='<h3>Soft-clip consensus beyond each end</h3>'+ds.map(d=>`<div class="muted">${esc(d.end.join(':'))}: ${d.n_clips} clipped reads, longest ${d.clip_lengths[0]||0} bp</div><pre class="seq">${esc(d.consensus.slice(0,600))||'—'}</pre>`).join('')+'<div class="muted" style="font-size:11px">Naive column consensus: reliable for HiFi/Illumina; indicative only for ONT/CLR.</div>';
   });
 }
-function scaffoldOf(end){for(const sc of S.scaffolds){for(const p of sc.parts){const pc=S.pieces[p.piece];if(!pc.copy&&pc.src===end[0])return sc.name}}}
-function sameScaffold(c){return c.a[0]===c.b[0]||scaffoldOf(c.a)===scaffoldOf(c.b)}
-async function acceptSel(){if(!sel)return;const je=E.eds.find(e=>e instanceof JoinEditor);if(je&&je.c.id===sel.id){je.gap=+$('#gapIn').value;return je.join()}const ok=await doOp({op:'join',id:sel.id,gap:+$('#gapIn').value,reason:'manual'});if(ok)nextCand(1)}
+function sameScaffold(c){return c.a[0]===c.b[0]}
+async function acceptSel(){if(!sel)return;const je=E.eds.find(e=>e instanceof JoinEditor);if(je&&je.c.id===sel.id){je.gap=+$('#gapIn').value;return je.join()}
+  await doOp({op:'join',id:sel.id,gap:+$('#gapIn').value,reason:'manual'})}
 function rejectSel(){if(!sel)return;rejected.add(sel.id);toast('rejected '+sel.id);nextCand(1)}
 function nextCand(d){const open=S.candidates.filter(c=>!isDone(c)&&!rejected.has(c.id));if(!open.length)return;
   let i=sel?open.findIndex(c=>c.id===sel.id):-1; i=i<0?0:(i+d+open.length)%open.length; selectCand(open[i]);}
 function showBreak(b){
   sel=null; G.sel=null; G.highlight=[b.contig]; G.draw();
-  const piece=Object.entries(S.pieces).find(([n,p])=>p.src===b.contig&&p.start<b.pos&&b.pos<p.end&&!p.copy);
+  const piece=S.segIdx[b.contig]!=null&&!S.working[b.contig].circular;
   $('#detail').innerHTML=`<div class="card"><h3 style="font-family:var(--mono)">${esc(b.contig)}:${b.pos}</h3>
    <table class="kv"><tr><td>reads clipping here</td><td>${b.reads}</td></tr><tr><td>clip side</td><td>${b.clip_side}</td></tr>
    <tr><td>mean coverage</td><td>${b.mean_cov}×</td></tr><tr><td>platform</td><td>${b.platform}</td></tr></table>
    <p class="muted">A pile of reads clipping at one column inside a contig is the signature of a mis-join or a collapsed-repeat boundary. Check the editor below, then split.</p>
-   ${piece?`<div class="row"><button class="primary" id="bSplit">Split ${esc(piece[0])} at ${b.pos}</button></div>`:'<div class="muted">Already split.</div>'}</div>`;
-  if(piece) $('#bSplit').onclick=()=>doOp({op:'split',piece:piece[0],pos:b.pos-piece[1].start,reason:`clip hotspot ${b.reads} reads`});
+   ${piece?`<div class="row"><button class="primary" id="bSplit">Break ${esc(b.contig)} at ${b.pos}</button></div><div class="muted" style="font-size:12px;margin-top:4px">Creates two contigs; reads crossing the break become soft-clipped on both sides, so you can check the evidence for re-joining.</div>`:'<div class="muted">Contig is circular (linearise first) or gone.</div>'}</div>`;
+  if(piece) $('#bSplit').onclick=()=>doOp({op:'split',contig:b.contig,pos:b.pos,reason:`clip hotspot ${b.reads} reads`});
   E.single(b.contig,b.pos);
 }
-$('#bAuto').onclick=async()=>{const r=await api('/api/op',{op:'auto'});if(r.ok){toast(`auto-joined ${r.result.joined.length}`);load(true)}else toast(r.error,1)};
+$('#bAuto').onclick=async()=>{const r=await doOp({op:'auto'});if(r)toast(`auto: ${r.result.result.joined.length} joins, ${r.result.result.circularised.length} circles closed`)};
 $('#bUndo').onclick=()=>doOp({op:'undo'});
 $('#bExport').onclick=async()=>{const r=await api('/api/export',{});toast(r.ok?'wrote '+r.files.join(', '):r.error,!r.ok)};
 document.querySelectorAll('[data-l]').forEach(cb=>cb.onchange=()=>{layers[cb.dataset.l]=cb.checked;G.draw()});
@@ -361,8 +368,13 @@ function drawRows(g,rows,y0,dir,maxRows,scroll,x0,n,X,refAt,dots){
     for(const r of row){const a=Math.max(x0,r.x),b=Math.min(x0+n,r.x+r.s.length);if(a>=b)continue;
       g.fillStyle=css('--p-'+(r.platform||'ont'));g.fillRect(X(a),y,(b-a)*CW,RH-1);
       if(a===r.x){g.fillStyle=css((STATUS[r.st]||STATUS.single)[0]);g.fillText(r.rev?'<':'>',X(a)-CW,y)}
+      const U=r.u||[];
       for(let c=a;c<b;c++){const ch=r.s[c-r.x],ref=refAt(c);
-        if(ch>='a'&&ch<='z'){g.fillStyle=css('--clip-bg');g.fillRect(X(c),y,CW,RH-1);g.fillStyle=css('--clip-ink');g.fillText(ch,X(c),y)}
+        if(ch>='a'&&ch<='z'){const un=U.some(([u0,u1])=>c>=u0&&c<u1);g.globalAlpha=un?.35:1;
+          g.fillStyle=css('--clip-bg');g.fillRect(X(c),y,CW,RH-1);const up=ch.toUpperCase();
+          if(!un&&ref&&ref!==' '&&up===ref){g.fillStyle=css('--clip-ink');g.fillText(dots?'·':ch,X(c),y)}
+          else if(!un&&ref&&ref!==' '&&ref!=='N'){g.fillStyle=css('--mm');g.fillText(ch,X(c),y)}
+          else{g.fillStyle=css('--clip-ink');g.fillText(ch,X(c),y)}g.globalAlpha=1}
         else if(ch==='*'){g.fillStyle=css('--mm');g.fillText('*',X(c),y)}
         else if(ch===ref){g.fillStyle=mut;g.fillText(dots?'·':ch,X(c),y)}
         else{g.fillStyle=css('--mm');g.fillText(ch,X(c),y)}}
@@ -379,6 +391,7 @@ class Editor{
     this.contig=contig;this.label=label||'';this.dots=true;this.scroll=0;
     root.insertAdjacentHTML('beforeend',`<div class="ed"><div class="edbar"><b></b><span class="muted lbl"></span><span class="sp"></span><span class="muted rows"></span>
       <label class="muted"><input type="checkbox" class="dots" checked> dots</label>${problemSelect()}
+      <button class="brk" title="Break contig at the cursor (Gap5 Break Contig)">✂ break</button>
       <button class="le" title="[">◀ L end</button><button class="pl">◀</button><input class="go" style="width:90px" placeholder="position"><button class="pr">▶</button><button class="re" title="]">R end ▶</button></div><div class="edcv"><canvas></canvas></div></div>`);
     this.el=root.lastElementChild;this.cv=this.el.querySelector('canvas');
     const q=s=>this.el.querySelector(s);
@@ -390,6 +403,9 @@ class Editor{
     q('.ptype').value=E.ptype;q('.pthr').value=S.problem_defaults[E.ptype];
     q('.ptype').onchange=e=>{E.ptype=e.target.value;q('.pthr').value=S.problem_defaults[E.ptype]};
     q('.pnext').onclick=()=>this.search(1);q('.pprev').onclick=()=>this.search(-1);
+    q('.brk').onclick=()=>{if(this.cursor==null||this.cursor<=0||this.cursor>=this.len){toast('click a base to place the cursor first',1);return}
+      if(confirm(`Break ${this.contig} before base ${this.cursor+1}?\nBoth halves become separate contigs; reads crossing the break become soft-clipped.`))
+        doOp({op:'split',contig:this.contig,pos:this.cursor,reason:'editor break'})};
     this.cv.parentElement.onwheel=e=>{e.preventDefault();if(Math.abs(e.deltaX)>Math.abs(e.deltaY)||e.shiftKey)this.goto(this.x0+this.ncol()/2+Math.sign(e.deltaX||e.deltaY)*20);else{this.scroll=Math.max(0,this.scroll+Math.sign(e.deltaY)*3);this.draw()}};
     this.cv.onclick=e=>{const r=this.cv.getBoundingClientRect();this.cursor=this.x0+Math.floor((e.clientX-r.left-LX)/CW);this.draw();T.mark(this.contig,this.cursor)};
     E.current=this.contig;
@@ -420,7 +436,9 @@ class Editor{
     for(const e of [0,this.len]){if(e>=this.x0&&e<=this.x0+n){g.fillStyle=css('--accent');g.fillRect(X(e)-1,0,2,H)}}
     if(this.cursor!=null){g.fillStyle=css('--hi');g.fillRect(X(this.cursor),0,CW,H);g.strokeStyle=css('--accent');g.strokeRect(X(this.cursor),0,CW,H)}
     drawRuler(g,this.x0,n,X,0,0,this.len,c=>String(c+1));
-    const at=i=>i>=0&&i<d.ref.length?d.ref[i].toUpperCase():' ';
+    const at=i=>{if(i<0||i>=d.ref.length)return ' ';const r=d.ref[i];return r!==' '?r.toUpperCase():(d.consensus[i]||' ').toUpperCase()};
+    const wk=S.working[this.contig];
+    if(wk)for(const j of wk.junctions){if(j>=this.x0&&j<=this.x0+n){g.strokeStyle=css('--ok');g.setLineDash([3,3]);g.beginPath();g.moveTo(X(j),0);g.lineTo(X(j),H);g.stroke();g.setLineDash([]);g.fillStyle=css('--ok');g.fillText('join',X(j)+3,12)}}
     drawSeqLine(g,20,d.ref,null,d.start,this.x0,n,X,null,'contig');
     drawSeqLine(g,20+RH,d.consensus,d.qual,d.start,this.x0,n,X,c=>at(c-d.start),'consens');
     g.fillStyle=css('--muted');g.fillText('depth',4,20+2*RH);drawDepth(g,20+2*RH,d.depth,d.start,this.x0,n,X);
@@ -474,8 +492,7 @@ class JoinEditor{
     const r=await this.align(true);
     const msg=r.overlap?`Overlap ${r.overlap} bp, ${r.identity}% identity (${r.mismatches} mismatches, ${r.indels} indels).`:`No overlap: ${this.gap} bp gap, filled with N.`;
     if(!confirm(`${this.c.a.join(':')} ⟷ ${this.c.b.join(':')}\n${msg}\n\nMake this ${sameScaffold(this.c)?'circle closure':'join'}?`))return;
-    const ok=await doOp({op:'join',id:this.c.id,gap:this.gap,reason:`join editor${r.overlap?` ovl ${r.overlap} ${r.identity}%`:''}`});
-    if(ok)nextCand(1);
+    await doOp({op:'join',id:this.c.id,gap:this.gap,reason:`join editor${r.overlap?` ovl ${r.overlap} ${r.identity}%`:''}`});
   }
   draw(){
     const [g,W,H]=sizeCanvas(this.cv);const d=this.data;if(!d)return;
@@ -486,20 +503,21 @@ class JoinEditor{
     shade(d.a_range[0],d.a_range[1],0,mid);shade(d.b_range[0],d.b_range[1],mid+RH,H-mid-RH);
     g.fillStyle=css('--accent');g.fillRect(X(0)-1,0,2,mid);g.fillRect(X(d.b_range[0])-1,mid+RH,2,H-mid-RH);
     if(d.gap<0){g.fillStyle=css('--hi');g.fillRect(X(d.gap),mid-2*RH,(-d.gap)*CW,4*RH)}
-    const A=d.A,B=d.B,atA=c=>{const i=c-d.start;return i>=0&&i<A.ref.length?A.ref[i].toUpperCase():' '},atB=c=>{const i=c-d.start;return i>=0&&i<B.ref.length?B.ref[i].toUpperCase():' '};
+    const A=d.A,B=d.B,J=c=>{const i=c-d.start;if(i<0)return ' ';const a=A.ref[i]||' ',b=B.ref[i]||' ';return (a!==' '?a:b).toUpperCase()};
+    const atA=c=>{const i=c-d.start;const a=(A.ref[i]||' ');return a!==' '?a.toUpperCase():J(c)},atB=c=>{const i=c-d.start;const b=(B.ref[i]||' ');return b!==' '?b.toUpperCase():J(c)};
     // A (flipped: consensus at the bottom, reads above)
     drawSeqLine(g,mid-2*RH,A.ref,null,d.start,this.x0,n,X,null,`${A.contig}${A.rev?' (−)':''}`);
     drawSeqLine(g,mid-RH,A.consensus,A.qual,d.start,this.x0,n,X,atA,'consA');
     drawRows(g,A.rows,mid-2*RH-2,-1,Math.floor((mid-2*RH-20)/RH),this.scrollA,this.x0,n,X,atA,this.dots);
     // differences line
     g.fillStyle=mut;g.fillText('diffs',4,mid);let nd=0,no=0;
-    for(let c=this.x0;c<this.x0+n;c++){const i=c-d.start,a=A.consensus[i],b=B.consensus[i];if(!a||!b||a===' '||b===' ')continue;no++;
+    for(let c=this.x0;c<this.x0+n;c++){const i=c-d.start,a=(A.consensus[i]||' ').toUpperCase(),b=(B.consensus[i]||' ').toUpperCase();if(a===' '||b===' ')continue;no++;
       if(a!==b){nd++;g.fillStyle=css('--mm');g.fillText('!',X(c),mid)}else{g.fillStyle=mut;g.fillText(':',X(c),mid)}}
     drawSeqLine(g,mid+RH,B.consensus,B.qual,d.start,this.x0,n,X,atB,'consB');
     drawSeqLine(g,mid+2*RH,B.ref,null,d.start,this.x0,n,X,null,`${B.contig}${B.rev?' (−)':''}`);
     drawRows(g,B.rows,mid+3*RH+2,1,Math.floor((H-mid-3*RH)/RH),this.scrollB,this.x0,n,X,atB,this.dots);
     drawRuler(g,this.x0,n,X,0,-1e12,1e12,c=>String(c));
-    g.fillStyle=mut;g.fillText(`join x=${this.x0}…${this.x0+n} · ${no?`${nd} diffs in ${no} overlapping cols`:'no overlap in view'}`,LX,H-RH);
+    g.fillStyle=mut;g.fillText(`join x=${this.x0}…${this.x0+n} · ${no?`${nd} diffs in ${no} cols (lower-case consensus = aligned clip consensus)`:'no overlap in view'}`,LX,H-RH);
   }
 }
 

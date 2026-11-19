@@ -23,7 +23,7 @@ you curate it in a single view.
 ## Quick start (synthetic data with a known answer)
 
 ```bash
-pip install -e .            # needs numpy; `pip install -e ".[bam]"` adds pysam for BAM/CRAM
+pip install -e .            # needs numpy + edlib; `pip install -e ".[bam]"` adds pysam for BAM/CRAM
 gapgraph simulate demo/
 gapgraph serve --gfa demo/assembly.gfa --aln illumina:demo/illumina.sam \
   --aln hifi:demo/hifi.sam --aln ont:demo/ont.sam --pairs demo/hic.pairs --project demo/project.json
@@ -101,6 +101,22 @@ Things to watch with real bacterial data:
 - Small plasmids can be shorter than the long reads, so a read may wrap the plasmid several times. These reads show up as repeated `plasmid+ -> plasmid+` paths, which is expected.
 - Polish after rotation and closing, not before: polishers handle the new origin best when it is far from a contig end.
 
+## Edits change the data (as in Gap5)
+
+**Splits and joins create real contigs.** gapgraph keeps your BAM/SAM files read-only. After every operation (join, break, flip, close circle, set start, undo) it rebuilds a *working assembly* from the project layout:
+
+- **One contig per scaffold.** Each scaffold becomes a single contig, with overlaps trimmed and circles rotated. The graph, editor, template display, problem search and join candidates all switch to the new contigs straight away.
+- **Reads follow the edit.** Every input alignment is cut to the piece it falls in. Bases outside the piece become soft clips, just as an aligner would report them against the new contig. Alignments are reverse-complemented when a piece is used on the minus strand, and mates are lifted too, so pairs that spanned two contigs become consistent pairs after the join.
+- **Break Contig** (✂ in the editor, or *Break* on a hotspot): reads that crossed the break become soft-clipped on both sides. The evidence for re-joining is then visible straight away; if the break was wrong, the top candidate puts it back.
+- **Join:** soft clips that ran off the old contig ends are re-aligned (edlib) into the sequence on the other side of the junction. Reads therefore span the join and the consensus is continuous across it. A read aligned to both old contigs (primary and supplementary) is kept once.
+
+**Soft clips are aligned, not just shown.** Clipped bases are Gap5's "hidden data". They are re-aligned to whatever lies beyond the contig end:
+
+- **Contig editor:** they align to the consensus of all the clips at that end (iterated star alignment). That consensus extends the consensus line past the contig end in lower case.
+- **Circular contig:** they align to the contig's own start.
+- **Join Editor:** they align to the partner contig at the current gap. Contig A's clips sit in register under contig B's sequence and vice versa, and mismatches are highlighted. Changing the gap re-aligns them.
+- **Unaligned tails:** clip sequence past the point where the alignment stops being supported (X-drop, typically adapter or junk) is drawn faded.
+
 ## The Gap5 tools, rebuilt
 
 These follow the Gap5 manual (Staden package Texinfo sources, `staden/trunk/doc/manual/gap5*.texi` in the Staden SourceForge repository), adapted to graph assemblies and mixed short- and long-read data.
@@ -161,7 +177,8 @@ These follow the Gap5 manual (Staden package Texinfo sources, `staden/trunk/doc/
 
 - Alignments are held in memory per contig. For large genomes, the next step is pysam region fetches from indexed BAM.
 - The soft-clip consensus is a naive column vote. It works for HiFi and Illumina, but is only indicative for ONT/CLR; a POA consensus would be the next step.
-- Gap filling only writes Ns. Splicing in the clip or read consensus is not yet implemented.
+- Gap filling only writes Ns. The aligned clip consensus is shown in the gap, but it is not yet spliced into the exported sequence.
+- After each edit the working assembly is rebuilt. Unchanged contigs are reused, so this is quick for a bacterial genome (about 1–2 s) but not instant for large genomes.
 - There is no base-level editing. Polishing belongs to dedicated tools.
 
 ## References

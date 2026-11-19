@@ -7,7 +7,7 @@ name = "gapgraph"
 version = "0.1.0"
 description = "Graph-aware genome finishing editor (Gap5-style) for long reads, short reads, soft-clips and Hi-C"
 requires-python = ">=3.9"
-dependencies = ["numpy>=1.20"]
+dependencies = ["numpy>=1.20", "edlib>=1.3"]
 
 [project.optional-dependencies]
 bam = ["pysam>=0.21"]

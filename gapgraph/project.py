@@ -81,7 +81,7 @@ class Project:
     def resolve_end(self, end):
         """[piece_or_contig, side] -> (piece, side relative to the piece)."""
         name, side = end
-        if name in self.pieces and not self.pieces[name].get("copy"):
+        if name in self.pieces:
             return name, side
         return self.piece_for_end((name, side)), side
 
@@ -108,9 +108,9 @@ class Project:
             o = s["origin"]
             s["origin"] = {"pos": (U - 1 - o["pos"]) % (U - t), "strand": flip_orient(o["strand"])}
         parts = s["parts"][::-1]
-        gaps = [p["gap"] for p in s["parts"]][:-1][::-1] + [0]
-        s["parts"] = [{"piece": p["piece"], "orient": flip_orient(p["orient"]), "gap": g}
-                      for p, g in zip(parts, gaps)]
+        gaps = [(p["gap"], p.get("ev", "unspecified")) for p in s["parts"]][:-1][::-1] + [(0, "unspecified")]
+        s["parts"] = [{"piece": p["piece"], "orient": flip_orient(p["orient"]), "gap": g, "ev": ev}
+                      for p, (g, ev) in zip(parts, gaps)]
 
     def join(self, end_a, end_b, gap=100, reason="", evidence=None, via=()):
         sa, side_a = self._scaffold_end(tuple(end_a))
@@ -246,7 +246,7 @@ class Project:
                 a += trim
             else:
                 b -= trim
-            comps.append(["W", p["src"], a, b, part["orient"]])
+            comps.append(["W", p["src"], a, b, part["orient"], part["piece"]])
             g = part["gap"]
             trim = 0
             if i < len(s["parts"]) - 1:
@@ -285,7 +285,7 @@ class Project:
         L = sum(self._clen(c) for c in comps)
         pos = origin["pos"] % L
         if origin.get("strand", "+") == "-":
-            comps = [c if c[0] == "N" else ["W", c[1], c[2], c[3], flip_orient(c[4])] for c in comps[::-1]]
+            comps = [c if c[0] == "N" else ["W", c[1], c[2], c[3], flip_orient(c[4]), c[5]] for c in comps[::-1]]
             pos = L - 1 - pos
         out, x = [], 0
         for i, c in enumerate(comps):
@@ -297,9 +297,9 @@ class Project:
                 if c[0] == "N":
                     left, right = ["N", k, c[2]], ["N", n - k, c[2]]
                 elif c[4] == "+":
-                    left, right = ["W", c[1], c[2], c[2] + k, "+"], ["W", c[1], c[2] + k, c[3], "+"]
+                    left, right = ["W", c[1], c[2], c[2] + k, "+", c[5]], ["W", c[1], c[2] + k, c[3], "+", c[5]]
                 else:
-                    left, right = ["W", c[1], c[3] - k, c[3], "-"], ["W", c[1], c[2], c[3] - k, "-"]
+                    left, right = ["W", c[1], c[3] - k, c[3], "-", c[5]], ["W", c[1], c[2], c[3] - k, "-", c[5]]
                 return [right] + comps[i + 1:] + comps[:i] + [left]
             x += n
         return comps

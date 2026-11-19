@@ -79,12 +79,17 @@ def test_misjoin_hotspots(sim):
 
 
 def test_full_reconstruction(sim, tmp_path):
-    d, r, S = sim
-    S.project = Project(S.seqs)
+    d, r, _ = sim
+    S = Session(gfa=r["gfa"], alignments=[(r["sam"][p], p) for p in ("illumina", "hifi", "ont")],
+                pairs=r["pairs"])
     b1, b2 = r["truth"]["breakpoints_in_A"]
-    S.op({"op": "split", "piece": "A", "pos": b1})
-    S.op({"op": "split", "piece": f"A:{b1}-{len(S.seqs['A'])}", "pos": b2 - b1})
-    S.op({"op": "join", "a": [f"A:0-{b1}", "R"], "b": [f"A:{b2}-{len(S.seqs['A'])}", "L"], "gap": 0})
+    LA = len(S.orig_seqs["A"])
+    S.op({"op": "split", "contig": "A", "pos": b1})
+    # the split is real: two new contigs, reads divided between them
+    assert "A" not in S.seqs and {f"A:0-{b1}", f"A:{b1}-{LA}"} <= set(S.seqs)
+    assert S.stores["illumina"].by_ref[f"A:{b1}-{LA}"]
+    S.op({"op": "split", "contig": f"A:{b1}-{LA}", "pos": b2 - b1})
+    S.op({"op": "join", "a": [f"A:0-{b1}", "R"], "b": [f"A:{b2}-{LA}", "L"], "gap": 0})
     chim = [s["name"] for s in S.project.scaffolds if s["parts"][0]["piece"] == f"A:{b1}-{b2}"][0]
     S.op({"op": "discard", "scaffold": chim})
     S.op({"op": "auto"})
@@ -189,6 +194,7 @@ def test_rotation_flip_consistency():
 from gapgraph.alignments import Alignment, parse_cigar, AlignmentStore
 from gapgraph.consensus import Pileup
 from gapgraph import pairs as pairs_mod, joinedit
+from collections import Counter
 
 
 def _aln(name, ref, pos, cigar, seq, platform="illumina", flag=0, mate_ref="", mate_pos=-1, tlen=0, mapq=60):
@@ -270,3 +276,89 @@ def test_banded_align_indels():
     x, y = joinedit.banded_align(a, b)
     assert x.replace("*", "") == a and y.replace("*", "") == b
     assert x.count("*") == 1 and y.count("*") == 1
+
+
+# ------------------------------- working assembly: splits and joins are real edits
+from gapgraph import realign
+from gapgraph.working import cut_alignment, reverse_alignment
+
+
+def test_reverse_and_cut_alignment():
+    a = _aln("r", "c", 100, "5S20M2I10M3D15M4S", "ACGT" * 14)   # 56 query bases
+    a = replace_soft(a, 5, 4)
+    b = reverse_alignment(reverse_alignment(a, 1000), 1000)
+    assert (b.pos, b.end, b.cigar, b.seq) == (a.pos, a.end, a.cigar, a.seq)
+    r = reverse_alignment(a, 1000)
+    assert r.pos == 1000 - a.end and r.lclip_soft == 4 and r.rclip_soft == 5
+    c = cut_alignment(a, 0, 125)          # keep the first 25 ref bases
+    assert c.end == 125 and c.pos == 100 and c.lclip_soft == 5
+    assert c.rclip_soft == len(a.seq) - 5 - sum(n for n, op in c.cigar if op in "MI")
+
+
+def replace_soft(a, l, r):
+    from dataclasses import replace
+    return replace(a, lclip=l, lclip_soft=l, rclip=r, rclip_soft=r)
+
+
+def test_split_makes_real_contigs_and_undo_restores(circ):
+    d, r = circ
+    S = _session(r)
+    res = S.op({"op": "split", "contig": "plasmid", "pos": 4000})
+    assert res["gone"] == ["plasmid"] and len(res["new"]) == 2
+    left = [w for w in res["new"] if w.startswith("plasmid:0-")][0]
+    # reads that crossed the break are now soft-clipped at the new end
+    L = S.lengths[left]
+    clipped = [a for a in S.stores["ont"].fetch(left, L - 50, L) if a.rclip_soft > 50 and a.end >= L - 5]
+    assert len(clipped) >= 3
+    # ... and the evidence immediately proposes joining it back
+    back = [c for c in S.candidates if {c["a"][0], c["b"][0]} == set(res["new"])]
+    assert back and back[0]["longread_reads"] > 0
+    S.op({"op": "undo"})
+    assert "plasmid" in S.seqs
+
+
+def test_join_makes_one_contig_with_reads_across(circ):
+    d, r = circ
+    S = _session(r)
+    res = S.op({"op": "join", "id": "chr_1:R~chr_2:R"})
+    w = res["new"][0]
+    j = S.W.comps[w][1][0]
+    reads = [a for st in S.stores.values() for a in st.fetch(w, j - 5, j + 5) if not a.supplementary]
+    assert len({(a.qname, a.flag & 192) for a in reads}) == len(reads)        # no duplicates
+    assert sum(1 for a in reads if a.pos < j - 50 and a.end > j + 50) >= 15   # reads span the join
+    assert not [p for p in S.problems(w, "contig") if abs(p[0] - j) < 2000]
+    st = Counter(pairs_mod.classify(a, S.insert_stats, S.other_contigs)
+                 for a in S.stores["illumina"].fetch(w, j - 300, j + 300) if not a.supplementary)
+    assert st.get("spanning", 0) == 0 and st["consistent"] > 20
+
+
+def test_clips_align_to_partner_in_join_editor(circ):
+    d, r = circ
+    S = _session(r)
+    v = S.joinview({"id": "chr_1:R~chr_2:R"}, -400, 300)
+    s0, ref, m, t = v["start"], v["B"]["ref"], 0, 0
+    for row in v["A"]["rows"]:
+        for rd in row:
+            for i, ch in enumerate(rd["s"]):
+                x = rd["x"] + i
+                if ch.islower() and ch != "*" and not any(u0 <= x < u1 for u0, u1 in rd.get("u", [])):
+                    o = ref[x - s0] if 0 <= x - s0 < len(ref) else " "
+                    if o != " ":
+                        t += 1
+                        m += ch.upper() == o
+    assert t > 1000 and m / t > 0.95
+
+
+def test_clip_consensus_from_noisy_reads():
+    import random
+    from gapgraph.simulate import _simulate_read, PLATFORMS
+    rng = random.Random(9)
+    truth = "".join(rng.choice("ACGT") for _ in range(1500))
+    clips = []
+    for _ in range(15):
+        ops = _simulate_read(rng, truth, 0, rng.randint(900, 1500), PLATFORMS["ont"])
+        clips.append("".join(b for op, g, b in ops if op != "D"))
+    cons = realign.clip_consensus(clips)
+    assert len(cons) > 800
+    x, y = joinedit.banded_align(cons, truth[:len(cons)])
+    assert sum(p == q for p, q in zip(x, y)) / len(x) > 0.99

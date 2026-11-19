@@ -7,7 +7,10 @@ from .alignments import (AlignmentStore, read_alignments, read_paf, hits_from_al
 from . import softclip, longreads, evidence, circular, pairs, joinedit
 from .consensus import Pileup, DEFAULT_THRESHOLDS, PROBLEM_LABELS
 from .hic import HiC, read_pairs
-from .project import Project
+from .project import Project, ProjectError
+from .working import Working
+from . import realign
+from collections import Counter
 
 
 class Session:
@@ -16,38 +19,49 @@ class Session:
         """alignments / paf: lists of (path, platform) with platform in
         illumina | hifi | clr | ont."""
         if gfa:
-            self.graph = AssemblyGraph.from_gfa(gfa)
+            graph = AssemblyGraph.from_gfa(gfa)
             if fasta:
-                for n, s in read_fasta(fasta).items():
-                    if n in self.graph.segments:
-                        self.graph.segments[n].seq = s
+                for n, sq in read_fasta(fasta).items():
+                    if n in graph.segments:
+                        graph.segments[n].seq = sq
+                        graph.segments[n].length = len(sq)
         else:
-            self.graph = AssemblyGraph.from_fasta(read_fasta(fasta))
-        self.seqs = {n: s.seq for n, s in self.graph.segments.items()}
-        missing = [n for n, s in self.seqs.items() if not s]
+            graph = AssemblyGraph.from_fasta(read_fasta(fasta))
+        seqs = {n: sg.seq for n, sg in graph.segments.items()}
+        missing = [n for n, sq in seqs.items() if not sq]
         if missing:
             raise ValueError(f"no sequence for segments {missing[:5]} -- pass --fasta")
-        self.lengths = {n: len(s) for n, s in self.seqs.items()}
-
-        self.stores = {}
+        # the inputs, never modified
+        self.orig_graph, self.orig_seqs = graph, seqs
+        self.orig_stores = {}
         for path, plat in alignments:
-            self.stores.setdefault(plat, AlignmentStore()).add(read_alignments(path, plat))
-
-        self.hits = []
+            self.orig_stores.setdefault(plat, AlignmentStore()).add(read_alignments(path, plat))
+        self.orig_hits = []
         for path, plat in paf:
-            self.hits.extend(read_paf(path, plat))
+            self.orig_hits.extend(read_paf(path, plat))
+        self.hic_raw = list(read_pairs(pairs)) if pairs else []
+        self.hic_end_bin = hic_end_bin
+
+        self.start_genes = read_fasta(start_fasta) if start_fasta else {}
+        self.project = Project(dict(seqs), path=project)
+        if project and os.path.exists(project):
+            self.project.load()
+        self._wcache = {}
+        self.rebuild()
+
+    def rebuild(self):
+        """Derive the working assembly from the project and recompute evidence."""
+        if len(self._wcache) > 2000:
+            self._wcache.clear()
+        W = Working(self.project, self.orig_graph, self.orig_seqs, self.orig_stores,
+                    self.orig_hits, self.hic_raw, cache=self._wcache)
+        self.W = W
+        self.graph, self.seqs, self.lengths, self.stores = W.graph, W.seqs, W.lengths, W.stores
+        self.hits = list(W.hits)
         for plat, st in self.stores.items():
             if plat != "illumina":
                 self.hits.extend(hits_from_alignments(st.all(), self.lengths))
-
-        self.hic = None
-        if pairs:
-            self.hic = HiC(self.lengths, end_bin=hic_end_bin).add(read_pairs(pairs))
-
-        self.start_genes = read_fasta(start_fasta) if start_fasta else {}
-        self.project = Project(self.seqs, path=project)
-        if project and os.path.exists(project):
-            self.project.load()
+        self.hic = HiC(self.lengths, end_bin=self.hic_end_bin).add(W.hic_pairs) if self.hic_raw else None
         self.compute()
 
     def compute(self):
@@ -78,6 +92,7 @@ class Session:
                     m["pairs"] += v["pairs"]
         self.other_contigs = pairs.other_contig_index(self.stores)
         self._pileups = {}
+        self._ext = {}
         self.candidates = evidence.build_candidates(self.graph, clip_joins, self.lr_joins, self.hic,
                                                     self.lr_paths, self.pair_joins)
         # snap read-based gap estimates to an exact sequence overlap where one exists
@@ -98,6 +113,13 @@ class Session:
                     c["flags"].append("circular")
                 if r["end_overlap"]:
                     c["gap"] = -r["end_overlap"]
+        for c in self.candidates:
+            ca, cb = c["a"][0], c["b"][0]
+            if ca in self.W.circular or cb in self.W.circular:
+                if ca == cb:
+                    c["done"] = True       # this circle is already closed
+                elif "circular-contig" not in c["flags"]:
+                    c["flags"].append("circular-contig")
         self.cand_by_id = {c["id"]: c for c in self.candidates}
         self._explain_hotspots()
 
@@ -135,6 +157,9 @@ class Session:
             "hotspots": self.hotspots,
             "paths": self.lr_paths[:200],
             "scaffolds": self.project.scaffolds,
+            "working": {w: {"scaffold": self.W.scaffold_of[w], "circular": w in self.W.circular,
+                            "parts": len(self.W.comps[w]),
+                            "junctions": [off for off, c in self.W.comps[w][1:]]} for w in self.seqs},
             "discarded": self.project.discarded,
             "pieces": self.project.pieces,
             "log": self.project.log[-50:],
@@ -147,7 +172,93 @@ class Session:
             "problem_defaults": DEFAULT_THRESHOLDS,
         }
 
-    def region(self, contig, start, end, max_rows=400, overhang=20000):
+    # ------------------------------------------------- clips beyond contig ends
+    def _end_reads(self, w, side, tol=30):
+        L, seq = self.lengths[w], self.seqs[w]
+        lo, hi = (max(0, L - tol - 1), L) if side == "R" else (0, tol + 1)
+        for st in self.stores.values():
+            for a in st.fetch(w, lo, hi):
+                if not a.seq:
+                    continue
+                if side == "R" and a.rclip_soft >= 3 and a.end >= L - tol:
+                    yield a, a.seq[len(a.seq) - a.rclip_soft:], seq[a.end:L]
+                elif side == "L" and a.lclip_soft >= 3 and a.pos <= tol:
+                    yield a, revcomp(a.seq[:a.lclip_soft]), revcomp(seq[:a.pos])
+
+    @staticmethod
+    def _rkey(a):
+        return (a.qname, a.pos, a.reverse, a.supplementary)
+
+    def end_ext(self, w, side, beyond=None):
+        """Align every soft clip at one contig end to the sequence beyond it.
+
+        `beyond` (outward orientation) is what is believed to lie past the end:
+        the partner contig in the Join Editor, the contig's own start for a
+        circle, and otherwise the consensus of the clips themselves (Gap5's
+        'hidden data' extension)."""
+        key = (w, side, hash(beyond) if beyond is not None else None)
+        if key in self._ext:
+            return self._ext[key]
+        reads = list(self._end_reads(w, side))
+        seq = self.seqs[w]
+        if beyond is None:
+            if w in self.W.circular:
+                beyond = seq[:60000] if side == "R" else revcomp(seq[-60000:])
+            else:
+                rems = []
+                for a, clip, tail in reads:
+                    q = realign.prefix_align(clip, tail)["q"] if tail else 0
+                    rems.append(clip[q:])
+                beyond = realign.clip_consensus(rems) if len(rems) >= 3 else max(rems, key=len, default="")
+        out, votes = {}, []
+        for a, clip, tail in reads:
+            tgt = tail + beyond[:len(clip) + 200]
+            al = realign.prefix_align(clip, tgt)
+            chars, ins = realign.render_cols(clip[:al["q"]], al["cols"])
+            out[self._rkey(a)] = {"chars": chars, "ins": ins, "raw": clip[al["q"]:], "ident": al["identity"]}
+            for j, ch in enumerate(chars):
+                k = j - len(tail)
+                if k >= 0:
+                    while len(votes) <= k:
+                        votes.append(Counter())
+                    votes[k][ch.upper()] += 1
+        cons = []
+        for v in votes:
+            n = sum(v.values())
+            cons.append(v.most_common(1)[0][0].lower() if n >= 2 else " ")
+        res = {"reads": out, "cons": "".join(cons).rstrip(), "beyond": beyond}
+        self._ext[key] = res
+        return res
+
+    def _render(self, a, start, end, ext_r, ext_l):
+        """render_read with end clips replaced by their aligned versions."""
+        base = render_read(a, -10 ** 9, 10 ** 9)
+        x0, s, ins, unal = base["x"], base["s"], list(base["ins"]), []
+        _comp = str.maketrans("ACGTNacgtn*", "TGCANtgcan*")
+        if ext_r:
+            s = s[:len(s) - a.rclip_soft] if a.rclip_soft else s
+            ch = ext_r["chars"].lower()
+            ins += [[a.end + j, b.lower()] for j, b in ext_r["ins"]]
+            if ext_r["raw"]:
+                unal.append([x0 + len(s) + len(ch), x0 + len(s) + len(ch) + len(ext_r["raw"])])
+            s = s + ch + ext_r["raw"].lower()
+        if ext_l:
+            if a.lclip_soft:
+                s = s[a.lclip_soft:]
+            ch = ext_l["chars"].translate(_comp)[::-1].lower()
+            raw = revcomp(ext_l["raw"]).lower()
+            ins += [[a.pos - j, revcomp(b).lower()] for j, b in ext_l["ins"]]
+            s = raw + ch + s
+            x0 = a.pos - len(ch) - len(raw)
+            if raw:
+                unal.append([x0, x0 + len(raw)])
+        lo, hi = max(start, x0), min(end, x0 + len(s))
+        r = dict(base)
+        r.update(x=lo, s=s[lo - x0:hi - x0] if hi > lo else "", ins=[i for i in ins if lo <= i[0] < hi],
+                 u=[[max(lo, u0), min(hi, u1)] for u0, u1 in unal if u1 > lo and u0 < hi])
+        return r
+
+    def region(self, contig, start, end, max_rows=400, overhang=20000, beyond=None):
         """Editor window.  The window may extend past either contig end so the
         soft-clipped bases of reads running off the end stay visible."""
         L = self.lengths[contig]
@@ -158,8 +269,17 @@ class Session:
         for plat in sorted(self.stores):
             reads.extend(self.stores[plat].fetch(contig, start, end))
         reads.sort(key=lambda a: a.pos - a.lclip_soft)
+        beyond = beyond or {}
+        ext = {}
+        if end > L - 60:
+            ext["R"] = self.end_ext(contig, "R", beyond.get("R"))
+        if start < 60:
+            ext["L"] = self.end_ext(contig, "L", beyond.get("L"))
         for a in reads:
-            r = render_read(a, start, end)
+            k = self._rkey(a)
+            er = ext["R"]["reads"].get(k) if "R" in ext else None
+            el = ext["L"]["reads"].get(k) if "L" in ext else None
+            r = self._render(a, start, end, er, el) if (er or el) else render_read(a, start, end)
             if not r["s"]:
                 continue
             r["st"] = pairs.classify(a, self.insert_stats, self.other_contigs)
@@ -180,6 +300,21 @@ class Session:
                 depth[x - start] += 1
         ref = " " * max(0, -start) + self.seqs[contig][max(0, start):min(L, end)] + " " * max(0, end - L)
         cons, qual = self.consensus_window(contig, start, end)
+        # extend the consensus line past the contig ends with the clip consensus
+        cl = list(cons)
+        if "R" in ext:
+            for k, ch in enumerate(ext["R"]["cons"]):
+                i = L + k - start
+                if 0 <= i < len(cl):
+                    cl[i] = ch
+                    qual[i] = 75
+        if "L" in ext:
+            for k, ch in enumerate(ext["L"]["cons"]):
+                i = -1 - k - start
+                if 0 <= i < len(cl) and ch != " ":
+                    cl[i] = ch.translate(str.maketrans("acgtn*", "tgcan*"))
+                    qual[i] = 75
+        cons = "".join(cl)
         return {"contig": contig, "start": start, "end": end, "length": L,
                 "ref": ref, "rows": rows, "depth": depth, "consensus": cons, "qual": qual}
 
@@ -247,6 +382,17 @@ class Session:
         a_rev, b_rev, a_off, b_off = joinedit.layout(a, b, gap, la, lb)
         out = {"a": list(a), "b": list(b), "gap": gap, "start": start, "end": end,
                "a_range": [a_off, 0], "b_range": [b_off, b_off + lb]}
+        A_or, B_or = self.oriented_seq(a, True), self.oriented_seq(b, False)
+        cap = 60000
+        if gap <= 0:
+            beyond_a = B_or[-gap:][:cap]
+            beyond_b = revcomp(A_or[:la + gap][-cap:])
+        else:
+            fill_a = self.end_ext(a[0], a[1])["beyond"][:gap].upper()
+            fill_b = self.end_ext(b[0], b[1])["beyond"][:gap].upper()
+            beyond_a = (fill_a + "N" * (gap - len(fill_a)) + B_or)[:cap]
+            beyond_b = (fill_b + "N" * (gap - len(fill_b)) + revcomp(A_or))[:cap]
+        bey = {"A": {a[1]: beyond_a}, "B": {b[1]: beyond_b}}
         for key, (ctg, L, rev, off) in (("A", (a[0], la, a_rev, a_off)), ("B", (b[0], lb, b_rev, b_off))):
             # join window -> oriented contig cols -> original cols
             o0, o1 = start - off, end - off
@@ -254,13 +400,17 @@ class Session:
                 f0, f1 = L - o1, L - o0
             else:
                 f0, f1 = o0, o1
-            reg = self.region(ctg, f0, f1, max_rows=max_rows)
+            reg = self.region(ctg, f0, f1, max_rows=max_rows, beyond=bey[key])
             rows = []
             for row in reg["rows"]:
                 nr = []
                 for r in row:
                     r2 = joinedit.orient_read(r, L, rev)
-                    r2 = dict(r2, x=r2["x"] + off, ins=[[p + off, s] for p, s in r2["ins"]])
+                    u = r2.get("u", [])
+                    if rev:
+                        u = [[L - u1, L - u0] for u0, u1 in u]
+                    r2 = dict(r2, x=r2["x"] + off, ins=[[p + off, s] for p, s in r2["ins"]],
+                              u=[[u0 + off, u1 + off] for u0, u1 in u])
                     nr.append(r2)
                 rows.append(nr)
             ref, cons, qual, depth = reg["ref"], reg["consensus"], reg["qual"], reg["depth"]
@@ -295,15 +445,29 @@ class Session:
     def hic_matrix(self):
         if not self.hic:
             return None
-        order = []
-        for s in self.project.scaffolds:
-            for p in s["parts"]:
-                src = self.project.pieces[p["piece"]]["src"]
-                if src not in order:
-                    order.append(src)
-        return self.hic.matrix(order)
+        return self.hic.matrix(list(self.seqs))
+
+    def _project_via(self, via):
+        out = []
+        for v in via or ():
+            w, o = v[:-1], v[-1]
+            s = self.project._scaffold(self.W.scaffold_of[w])
+            if len(s["parts"]) != 1:
+                return []
+            part = s["parts"][0]
+            pc = self.project.pieces[part["piece"]]
+            if pc["start"] != 0 or pc["end"] != len(self.project.seqs[pc["src"]]):
+                return []
+            out.append(pc["src"] + (o if part["orient"] == "+" else ("-" if o == "+" else "+")))
+        return out
 
     def op(self, req):
+        before = set(self.seqs)
+        res = self._op(req)
+        self.rebuild()
+        return {"result": res, "new": sorted(set(self.seqs) - before), "gone": sorted(before - set(self.seqs))}
+
+    def _op(self, req):
         P = self.project
         op = req.get("op")
         if op == "join":
@@ -315,13 +479,25 @@ class Session:
                 gap = c["gap"]
             else:
                 gap = circular.refine_gap(self.seqs, tuple(a), tuple(b), c["gap"] if c else 100)
-            return {"scaffold": P.join(a, b, gap, reason=req.get("reason", ""),
-                                       evidence=c["evidence"] if c else None,
-                                       via=req.get("via", c["via"] if c else []))}
+            via = self._project_via(req.get("via", c["via"] if c else []))
+            pa, pb = self.W.to_project_end(tuple(a)), self.W.to_project_end(tuple(b))
+            return {"scaffold": P.join(pa, pb, gap, reason=req.get("reason", ""),
+                                       evidence=c["evidence"] if c else None, via=via)}
         if op == "break":
             return P.break_scaffold(req["scaffold"], int(req["after"]))
         if op == "split":
-            return P.split_contig(req["piece"], int(req["pos"]), reason=req.get("reason", ""))
+            if "piece" in req:
+                return P.split_contig(req["piece"], int(req["pos"]), reason=req.get("reason", ""))
+            w, x = req["contig"], int(req["pos"])
+            if w in self.W.circular:
+                raise ProjectError(f"{w} is circular: linearise it before splitting")
+            loc = self.W.locate(w, x)
+            if loc is None:
+                raise ProjectError("split position outside the contig")
+            i, piece, rel, off = loc
+            if rel == 0 and i > 0:     # exactly on a join: break the scaffold there
+                return P.break_scaffold(self.W.scaffold_of[w], i - 1)
+            return P.split_contig(piece, rel, reason=req.get("reason", ""))
         if op == "circularise":
             return P.circularise(req["scaffold"], int(req.get("gap", 0)), reason=req.get("reason", ""))
         if op == "linearise":
@@ -341,7 +517,7 @@ class Session:
         if op == "undo":
             return P.undo()
         if op == "auto":
-            return self.auto_scaffold(float(req.get("min_score", 6)), circularise=req.get("circularise", True))
+            return self._auto(float(req.get("min_score", 6)), circularise=req.get("circularise", True))
         raise ValueError(f"unknown op {op}")
 
     def locate_start(self, scaffold, gene=None):
@@ -357,32 +533,49 @@ class Session:
         return best
 
     def auto_scaffold(self, min_score=6.0, circularise=True, min_circ_score=4.0):
+        res = self._auto(min_score, circularise, min_circ_score)
+        self.rebuild()
+        return res
+
+    def _auto(self, min_score=6.0, circularise=True, min_circ_score=4.0):
         """Greedy: accept best unambiguous candidates first, then close circles
         and rotate to the start gene (a starting point for curation)."""
         done, rotated = [], []
+        # translate every candidate to project ends *before* the layout changes
+        tr = {}
+        for c in self.candidates:
+            if c.get("done"):
+                continue
+            try:
+                tr[c["id"]] = (self.W.to_project_end(tuple(c["a"])), self.W.to_project_end(tuple(c["b"])),
+                               self._project_via(c["via"]))
+            except Exception:
+                pass
         was_circular = {sc["name"] for sc in self.project.scaffolds if sc.get("circular")}
         tang = set(self.graph.tangles())
         for c in self.candidates:
-            if c.get("circular"):
+            if c.get("circular") or c["id"] not in tr:
                 continue
             if (c["score"] < min_score or "ambiguous" in c["flags"] or c["a"][0] == c["b"][0]
                     or c["a"][0] in tang or c["b"][0] in tang):
                 continue
             try:
                 gap = c["gap"] if c["via"] else circular.refine_gap(self.seqs, tuple(c["a"]), tuple(c["b"]), c["gap"])
-                self.project.join(c["a"], c["b"], gap, reason=f"auto score={c['score']}",
-                                  evidence=c["evidence"], via=c["via"])
+                pa, pb, via = tr[c["id"]]
+                self.project.join(pa, pb, gap, reason=f"auto score={c['score']}",
+                                  evidence=c["evidence"], via=via)
                 done.append(c["id"])
             except Exception:
                 pass
         if circularise:
             # close any scaffold whose two terminal ends are joined by a candidate
             for c in self.candidates:
-                if c["score"] < min_circ_score:
+                if c["score"] < min_circ_score or c["id"] not in tr:
                     continue
+                pa, pb, _ = tr[c["id"]]
                 try:
-                    sa, side_a = self.project._scaffold_end(tuple(c["a"]))
-                    sb, side_b = self.project._scaffold_end(tuple(c["b"]))
+                    sa, side_a = self.project._scaffold_end(pa)
+                    sb, side_b = self.project._scaffold_end(pb)
                 except Exception:
                     continue
                 if sa != sb or side_a == side_b:
