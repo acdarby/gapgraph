@@ -37,6 +37,23 @@ class Alignment:
     supplementary: bool
     qlen: int           # full read length incl. hard clips
     platform: str = ""
+    flag: int = 0
+    mate_ref: str = ""  # "" if unpaired / mate unmapped
+    mate_pos: int = -1  # 0-based
+    tlen: int = 0
+    qual: str = ""      # SAM QUAL (phred+33) or "" if absent
+
+    @property
+    def paired(self):
+        return bool(self.flag & 1)
+
+    @property
+    def mate_reverse(self):
+        return bool(self.flag & 32)
+
+    @property
+    def first_in_pair(self):
+        return bool(self.flag & 64)
 
     @property
     def lclip_seq(self):
@@ -58,7 +75,8 @@ def parse_cigar(s):
     return [(int(n), op) for n, op in _CIG.findall(s)]
 
 
-def _from_fields(qname, flag, ref, pos0, mapq, cigar, seq, platform):
+def _from_fields(qname, flag, ref, pos0, mapq, cigar, seq, platform,
+                 mate_ref="", mate_pos=-1, tlen=0, qual=""):
     lclip = rclip = lsoft = rsoft = 0
     i = 0
     while i < len(cigar) and cigar[i][1] in "SH":
@@ -74,7 +92,9 @@ def _from_fields(qname, flag, ref, pos0, mapq, cigar, seq, platform):
     qlen = sum(n for n, op in cigar if op in "MIS=XH")
     return Alignment(qname, ref, pos0, pos0 + rlen, bool(flag & 16), mapq, cigar,
                      "" if seq == "*" else seq, lclip, rclip, lsoft, rsoft,
-                     bool(flag & 2048), qlen, platform)
+                     bool(flag & 2048), qlen, platform, flag,
+                     "" if (flag & 8 or not flag & 1) else mate_ref, mate_pos, tlen,
+                     "" if qual == "*" else qual)
 
 
 def read_sam(path, platform=""):
@@ -90,7 +110,9 @@ def read_sam(path, platform=""):
             flag = int(f[1])
             if flag & 4 or flag & 256 or f[5] == "*":
                 continue
-            yield _from_fields(f[0], flag, f[2], int(f[3]) - 1, int(f[4]), parse_cigar(f[5]), f[9], platform)
+            mref = f[2] if f[6] == "=" else (f[6] if f[6] != "*" else "")
+            yield _from_fields(f[0], flag, f[2], int(f[3]) - 1, int(f[4]), parse_cigar(f[5]), f[9], platform,
+                               mref, int(f[7]) - 1, int(f[8]), f[10] if len(f) > 10 else "")
 
 
 _PYSAM_OPS = "MIDNSHP=X"
@@ -104,8 +126,10 @@ def read_bam(path, platform="", region=None):
             if r.is_unmapped or r.is_secondary:
                 continue
             cig = [(n, _PYSAM_OPS[op]) for op, n in r.cigartuples]
+            qual = "".join(chr(q + 33) for q in r.query_qualities) if r.query_qualities is not None else ""
             yield _from_fields(r.query_name, r.flag, r.reference_name, r.reference_start,
-                               r.mapping_quality, cig, r.query_sequence or "*", platform)
+                               r.mapping_quality, cig, r.query_sequence or "*", platform,
+                               r.next_reference_name or "", r.next_reference_start, r.template_length, qual)
 
 
 def read_alignments(path, platform=""):

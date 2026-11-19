@@ -8,20 +8,21 @@
 :root{
   --bg:#f6f7f9; --panel:#ffffff; --ink:#1d2330; --muted:#6b7385; --line:#dde1e8; --hi:#eef2ff;
   --accent:#3b5bdb; --ok:#2b8a3e; --warn:#e67700; --bad:#c92a2a;
-  --ev-graph:#868e96; --ev-longread:#1c7ed6; --ev-softclip:#e8590c; --ev-hic:#9c36b5; --ev-path:#0ca678;
+  --ev-graph:#868e96; --ev-longread:#1c7ed6; --ev-softclip:#e8590c; --ev-hic:#9c36b5; --ev-path:#0ca678; --ev-pairs:#f08c00;
   --clip-bg:#fff0e0; --clip-ink:#c25400; --mm:#d6336c; --ins:#7048e8;
   --p-illumina:#f1f3f5; --p-hifi:#ebfbee; --p-ont:#e7f5ff; --p-clr:#fff9db;
+  --st-single:#4dabf7; --st-span:#f76707; --st-size:#c0858a; --st-fwd:#2f9e44; --st-rev:#ae3ec9; --qbad:#495057;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
   --bg:#12151b; --panel:#1a1e26; --ink:#e3e7ee; --muted:#8b93a5; --line:#2c323d; --hi:#232a3a;
   --accent:#748ffc; --clip-bg:#3a2612; --clip-ink:#ffa94d; --mm:#f06595; --ins:#9775fa;
-  --p-illumina:#1f232b; --p-hifi:#18271d; --p-ont:#16222f; --p-clr:#2a2716;
+  --p-illumina:#1f232b; --p-hifi:#18271d; --p-ont:#16222f; --p-clr:#2a2716; --qbad:#adb5bd;
 }}
 :root[data-theme="dark"]{
   --bg:#12151b; --panel:#1a1e26; --ink:#e3e7ee; --muted:#8b93a5; --line:#2c323d; --hi:#232a3a;
   --accent:#748ffc; --clip-bg:#3a2612; --clip-ink:#ffa94d; --mm:#f06595; --ins:#9775fa;
-  --p-illumina:#1f232b; --p-hifi:#18271d; --p-ont:#16222f; --p-clr:#2a2716;
+  --p-illumina:#1f232b; --p-hifi:#18271d; --p-ont:#16222f; --p-clr:#2a2716; --qbad:#adb5bd;
 }
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.4 system-ui,-apple-system,Segoe UI,sans-serif}
@@ -47,6 +48,7 @@ aside{overflow:hidden;display:flex;flex-direction:column;background:var(--panel)
 .filters{padding:6px 10px;display:flex;gap:6px;border-bottom:1px solid var(--line);align-items:center}
 main{display:grid;grid-template-rows:42% 1fr;min-width:0;min-height:0}
 #graphwrap{position:relative;border-bottom:1px solid var(--line);min-height:0}
+.toptabs{position:absolute;z-index:2;top:6px;left:8px;display:flex;gap:0}.toptabs button{border-radius:0;padding:3px 12px}.toptabs button:first-child{border-radius:6px 0 0 6px}.toptabs button:last-child{border-radius:0 6px 6px 0}.toptabs button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
 canvas{display:block}
 #tip{position:absolute;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:12px;display:none;white-space:nowrap;box-shadow:0 2px 8px #0002}
 #editors{display:flex;flex-direction:column;min-height:0;overflow:hidden}
@@ -71,6 +73,7 @@ pre.seq{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:b
   <span class="layer"><input type="checkbox" data-l="graph" checked><span class="sw" style="background:var(--ev-graph)"></span>graph</span>
   <span class="layer"><input type="checkbox" data-l="longread" checked><span class="sw" style="background:var(--ev-longread)"></span>long reads</span>
   <span class="layer"><input type="checkbox" data-l="softclip" checked><span class="sw" style="background:var(--ev-softclip)"></span>soft-clips</span>
+  <span class="layer"><input type="checkbox" data-l="pairs" checked><span class="sw" style="background:var(--ev-pairs)"></span>pairs</span>
   <span class="layer"><input type="checkbox" data-l="hic" checked><span class="sw" style="background:var(--ev-hic)"></span>Hi-C</span>
   <span class="layer"><input type="checkbox" data-l="path" checked><span class="sw" style="background:var(--ev-path)"></span>paths</span>
   <button id="bAuto" title="accept best unambiguous joins">Auto-scaffold</button>
@@ -80,7 +83,7 @@ pre.seq{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:b
 <aside id="left">
   <div class="tabs" id="tabs">
     <button data-t="joins" class="on">Joins</button><button data-t="breaks">Breaks</button>
-    <button data-t="paths">Paths</button><button data-t="scaffolds">Scaffolds</button><button data-t="log">Log</button>
+    <button data-t="problems">Problems</button><button data-t="paths">Paths</button><button data-t="scaffolds">Scaffolds</button><button data-t="log">Log</button>
   </div>
   <div class="filters" id="filters">
     <input id="q" placeholder="filter contig…" style="flex:1">
@@ -89,12 +92,19 @@ pre.seq{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:b
   <div class="list" id="list"></div>
 </aside>
 <main>
-  <div id="graphwrap"><canvas id="gcv"></canvas><div id="tip"></div></div>
+  <div id="graphwrap">
+    <div id="toptabs" class="toptabs"><button data-v="graph" class="on">Graph</button><button data-v="template" title="t">Template</button></div>
+    <div id="gview" style="position:absolute;inset:0"><canvas id="gcv"></canvas><div id="tip"></div></div>
+    <div id="tview" style="position:absolute;inset:0;display:none;flex-direction:column">
+      <div class="edbar" style="padding-left:150px"><select id="tcontig"></select><label class="muted"><input type="checkbox" id="tlog" checked> log Y</label>
+        <span id="tlegend" class="layer" style="gap:10px;flex-wrap:wrap"></span><span class="sp"></span><span class="muted">wheel zoom · drag pan · click opens editor</span></div>
+      <div style="flex:1;min-height:0;position:relative"><canvas id="tcv"></canvas></div></div>
+  </div>
   <div id="editors"></div>
 </main>
 <aside id="right">
   <div id="detail" class="list" style="flex:none;max-height:60%"><div class="card muted">Select a join, a break, or click a contig in the graph.<br><br>
-  Keys: <b>j</b>/<b>k</b> next/prev join · <b>a</b> accept · <b>x</b> reject · <b>u</b> undo · <b>←/→</b> scroll editor · <b>[</b>/<b>]</b> jump to contig ends</div></div>
+  Keys: <b>j</b>/<b>k</b> next/prev join · <b>a</b> accept · <b>x</b> reject · <b>u</b> undo · <b>←/→</b> scroll editor · <b>[</b>/<b>]</b> contig ends · <b>Ctrl-S</b>/<b>Ctrl-R</b> next/prev problem · <b>t</b> template view</div></div>
   <div class="card" style="flex:1;display:flex;flex-direction:column;min-height:0"><h3>Hi-C contacts <span class="muted" style="font-weight:normal">(scaffold order)</span></h3>
     <div style="flex:1;min-height:0;position:relative"><canvas id="hcv"></canvas></div></div>
 </aside>
@@ -104,8 +114,8 @@ pre.seq{font-family:var(--mono);font-size:11px;white-space:pre-wrap;word-break:b
 "use strict";
 const $=s=>document.querySelector(s);
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-const EV={graph:'--ev-graph',longread:'--ev-longread',softclip:'--ev-softclip',hic:'--ev-hic',path:'--ev-path'};
-let S=null, tab='joins', sel=null, rejected=new Set(), layers={graph:1,longread:1,softclip:1,hic:1,path:1};
+const EV={graph:'--ev-graph',longread:'--ev-longread',softclip:'--ev-softclip',pairs:'--ev-pairs',hic:'--ev-hic',path:'--ev-path'};
+let S=null, tab='joins', sel=null, rejected=new Set(), layers={graph:1,longread:1,softclip:1,pairs:1,hic:1,path:1};
 const api=(u,b)=>fetch(u,b?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}:{}).then(r=>r.json());
 function toast(m,bad){const t=$('#toast');t.textContent=m;t.style.background=bad?css('--bad'):'';t.style.display='block';clearTimeout(t._h);t._h=setTimeout(()=>t.style.display='none',2600)}
 const fmt=n=>n>=1e6?(n/1e6).toFixed(2)+' Mb':n>=1e3?(n/1e3).toFixed(1)+' kb':n+' bp';
@@ -122,6 +132,7 @@ async function load(keepLayout){
     const leftEnd=p.orient==='+'?'L':'R', rightEnd=p.orient==='+'?'R':'L';
     if(!first||sc.circular) S.joinedEnds.add(src+':'+leftEnd); if(!last||sc.circular) S.joinedEnds.add(src+':'+rightEnd);});}
   $('#stats').textContent=`${S.graph.segments.length} contigs · ${S.scaffolds.length} scaffolds · ${S.candidates.length} candidate joins · ${S.hotspots.length} break hotspots · ${S.platforms.join('/')||'no reads'}${S.has_hic?' + Hi-C':''}`;
+  $('#tcontig').innerHTML=S.graph.segments.map(x=>`<option>${esc(x.name)}</option>`).join('');if(T.contig)$('#tcontig').value=T.contig;
   if(!keepLayout) G.init(); else G.draw();
   renderList(); drawHiC();
 }
@@ -130,7 +141,7 @@ const isDone=c=>S.joinedEnds.has(c.a.join(':'))&&S.joinedEnds.has(c.b.join(':'))
 // ------------------------------------------------------------------ left list
 function renderList(){
   const q=$('#q').value.trim(), hide=$('#hideDone').checked, L=$('#list');
-  $('#filters').style.display=(tab==='log'||tab==='scaffolds')?'none':'flex';
+  $('#filters').style.display=(tab==='log'||tab==='scaffolds'||tab==='problems')?'none':'flex';
   let h='';
   if(tab==='joins'){
     S.candidates.filter(c=>(!q||c.id.includes(q))&&(!hide||(!isDone(c)&&!rejected.has(c.id)))).forEach(c=>{
@@ -142,6 +153,16 @@ function renderList(){
       h+=`<div class="item" data-b="${i}"><div class="t"><span>${esc(b.contig)}:${b.pos}</span><span>${b.reads} reads</span></div>
       <div class="chips"><span class="chip">${b.platform}</span><span class="chip">clip ${b.clip_side}</span><span class="chip">cov ${b.mean_cov}×</span>${b.explained?`<span class="chip" style="color:var(--ok)">${esc(b.explained)}</span>`:''}</div></div>`});
     if(!h) h='<div class="card muted">No internal soft-clip hotspots.</div>';
+  } else if(tab==='problems'){
+    const pt=S._ptype||'contig';
+    h=`<div class="filters"><select id="probType">${Object.entries(S.problem_types).map(([k,v])=>`<option value="${k}" ${k===pt?'selected':''}>${esc(v)}</option>`).join('')}</select>
+      <input id="probThr" style="width:55px" value="${S._pthr??S.problem_defaults[pt]}"><button id="probGo">Find</button></div><div id="probList" class="muted card">…</div>`;
+    L.innerHTML=h;
+    const run=async()=>{S._ptype=$('#probType').value;S._pthr=$('#probThr').value;E.ptype=S._ptype;
+      const r=await api(`/api/problems?type=${S._ptype}&thr=${S._pthr}`);
+      $('#probList').outerHTML=`<div id="probList">${r.length?r.map(p=>`<div class="item" data-pc="${esc(p.contig)}" data-ps="${p.start}"><div class="t"><span>${esc(p.contig)}:${p.start+1}${p.end-p.start>1?'-'+p.end:''}</span><span class="muted">${p.end-p.start} bp</span></div></div>`).join('')+(r.length>=500?'<div class="card muted">first 500 shown</div>':''):'<div class="card muted">None found.</div>'}</div>`};
+    $('#probType').onchange=()=>{$('#probThr').value=S.problem_defaults[$('#probType').value];run()};$('#probGo').onclick=run;run();
+    return;
   } else if(tab==='paths'){
     S.paths.filter(p=>!q||p.path.join().includes(q)).forEach((p,i)=>{
       h+=`<div class="item" data-p="${i}"><div class="t"><span>${esc(p.path.join(' → '))}</span><span>${p.reads}</span></div></div>`});
@@ -165,6 +186,7 @@ function renderList(){
 $('#tabs').onclick=e=>{const t=e.target.dataset.t;if(!t)return;tab=t;document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));renderList()};
 $('#q').oninput=renderList; $('#hideDone').onchange=renderList;
 $('#list').onclick=async e=>{
+  const pc=e.target.closest('[data-pc]');if(pc){E.single(pc.dataset.pc,+pc.dataset.ps);const ed=E.eds[0];ed.cursor=+pc.dataset.ps;return}
   const it=e.target.closest('[data-c],[data-b],[data-p],[data-brk],[data-flip],[data-disc],[data-lin],[data-circ],[data-ogene],[data-opos]'); if(!it)return;
   const d=it.dataset;
   if(d.c) selectCand(S.candidates.find(c=>c.id===d.c));
@@ -194,6 +216,7 @@ function selectCand(c){
     <tr><td class="muted">&nbsp;&nbsp;by platform</td><td>${pl(c.longread_platforms)}</td></tr>
     <tr><td><span class="sw" style="background:${css('--ev-softclip')}"></span> soft-clip matches</td><td>${c.softclip_reads} (gap ${c.softclip_gap??'–'})</td></tr>
     <tr><td class="muted">&nbsp;&nbsp;by platform</td><td>${pl(c.softclip_platforms)}</td></tr>
+    <tr><td><span class="sw" style="background:${css('--ev-pairs')}"></span> spanning read pairs</td><td>${c.pair_reads} (gap ${c.pair_gap??'–'})</td></tr>
     <tr><td><span class="sw" style="background:${css('--ev-hic')}"></span> Hi-C end contacts</td><td>${c.hic_contacts}</td></tr>
     <tr><td class="muted">&nbsp;&nbsp;share · orientation</td><td>${c.hic_norm} · ${Math.round(c.hic_orient*100)}%</td></tr>
     ${c.via.length?`<tr><td><span class="sw" style="background:${css('--ev-path')}"></span> through repeat</td><td>${esc(c.via.join(','))} (${c.via_reads} reads)</td></tr>`:''}
@@ -203,14 +226,14 @@ function selectCand(c){
    <div class="muted" style="margin-top:6px;font-size:12px">Negative gap = overlap, trimmed from the second contig on export.</div></div>
    <div class="card" id="endinfo"></div>`;
   $('#bAcc').onclick=acceptSel; $('#bRej').onclick=rejectSel;
-  E.junction(c);
+  E.join(c);
   Promise.all([api(`/api/end?contig=${encodeURIComponent(c.a[0])}&side=${c.a[1]}`),api(`/api/end?contig=${encodeURIComponent(c.b[0])}&side=${c.b[1]}`)]).then(ds=>{
     $('#endinfo').innerHTML='<h3>Soft-clip consensus beyond each end</h3>'+ds.map(d=>`<div class="muted">${esc(d.end.join(':'))}: ${d.n_clips} clipped reads, longest ${d.clip_lengths[0]||0} bp</div><pre class="seq">${esc(d.consensus.slice(0,600))||'—'}</pre>`).join('')+'<div class="muted" style="font-size:11px">Naive column consensus: reliable for HiFi/Illumina; indicative only for ONT/CLR.</div>';
   });
 }
 function scaffoldOf(end){for(const sc of S.scaffolds){for(const p of sc.parts){const pc=S.pieces[p.piece];if(!pc.copy&&pc.src===end[0])return sc.name}}}
 function sameScaffold(c){return c.a[0]===c.b[0]||scaffoldOf(c.a)===scaffoldOf(c.b)}
-async function acceptSel(){if(!sel)return;const ok=await doOp({op:'join',id:sel.id,gap:+$('#gapIn').value,reason:'manual'});if(ok)nextCand(1)}
+async function acceptSel(){if(!sel)return;const je=E.eds.find(e=>e instanceof JoinEditor);if(je&&je.c.id===sel.id){je.gap=+$('#gapIn').value;return je.join()}const ok=await doOp({op:'join',id:sel.id,gap:+$('#gapIn').value,reason:'manual'});if(ok)nextCand(1)}
 function rejectSel(){if(!sel)return;rejected.add(sel.id);toast('rejected '+sel.id);nextCand(1)}
 function nextCand(d){const open=S.candidates.filter(c=>!isDone(c)&&!rejected.has(c.id));if(!open.length)return;
   let i=sel?open.findIndex(c=>c.id===sel.id):-1; i=i<0?0:(i+d+open.length)%open.length; selectCand(open[i]);}
@@ -312,80 +335,230 @@ const G={pts:[],sel:null,highlight:null,view:{x:0,y:0,k:1},
       const dx=x2-x1,dy=y2-y1,t=Math.max(0,Math.min(1,((x-x1)*dx+(y-y1)*dy)/(dx*dx+dy*dy||1)));const d=Math.hypot(x1+t*dx-x,y1+t*dy-y);
       if(d<bd){bd=d;best={seg:s,t}}}return best}
   function gclick(e){const h=hit(e);if(!h)return;if(h.c)selectCand(h.c);else{G.highlight=[h.seg.name];G.sel=null;G.draw();E.single(h.seg.name,Math.round(h.t*h.seg.length))}}
-  window.addEventListener('resize',()=>{G.draw();E.redraw();drawHiC()});
+  window.addEventListener('resize',()=>{G.draw();E.redraw();drawHiC();if(topv==='template')T.draw()});
 })();
 
+// ------------------------------------------------------------------ shared pileup drawing
+const CW=8.4, RH=13, LX=70, BASE={A:'#2b8a3e',C:'#1c7ed6',G:'#e67700',T:'#c92a2a'};
+// Gap5 names-panel colours for template status
+const STATUS={consistent:['--muted','consistent pair'],single:['--st-single','unpaired'],spanning:['--st-span','mate / other alignment in another contig'],
+  orientation:['--bad','pair in invalid orientation'],size:['--st-size','insert too short/long'],wrap:['--ok','pair wraps a circular end']};
+const PROBLEM_KEYS={consq:'q',contig:'c',discrep:'d',het:'h',lowcov:'l',highcov:'H'};
+function drawRuler(g,x0,n,X,y,lo,hi,label){const mut=css('--muted');g.fillStyle=mut;
+  for(let c=Math.ceil(x0/10)*10;c<x0+n;c+=10){if(c<lo||c>hi)continue;g.fillRect(X(c),y+12,1,4);if(c%50===0)g.fillText(label(c),X(c)+2,y)}}
+function drawSeqLine(g,y,text,qual,start,x0,n,X,cmp,name){
+  const mut=css('--muted'),ink=css('--ink');g.fillStyle=mut;g.fillText(name,4,y);
+  for(let c=x0;c<x0+n;c++){const i=c-start;if(i<0||i>=text.length)continue;const b=text[i];if(b===' ')continue;
+    if(qual){const q=qual[i];g.fillStyle=css('--qbad');g.globalAlpha=Math.max(0,(100-q)/100)*.9;g.fillRect(X(c),y,CW,RH-1);g.globalAlpha=1}
+    const ref=cmp?cmp(c):null;
+    g.fillStyle=ref&&b!==ref&&ref!==' '?css('--mm'):(BASE[b.toUpperCase()]||ink);g.fillText(b,X(c),y)}}
+function drawDepth(g,y,depth,start,x0,n,X){g.fillStyle=css('--accent');g.globalAlpha=.5;
+  for(let c=x0;c<x0+n;c++){const i=c-start;if(i<0||i>=depth.length)continue;const h=Math.min(RH-2,depth[i]/3);g.fillRect(X(c),y+RH-h-1,CW-1,h)}g.globalAlpha=1}
+// rows: dir=+1 stack downward from y0, dir=-1 stack upward (Join Editor top half)
+function drawRows(g,rows,y0,dir,maxRows,scroll,x0,n,X,refAt,dots){
+  const mut=css('--muted');
+  rows.slice(scroll,scroll+maxRows).forEach((row,ri)=>{const y=y0+dir*ri*RH-(dir<0?RH:0);
+    for(const r of row){const a=Math.max(x0,r.x),b=Math.min(x0+n,r.x+r.s.length);if(a>=b)continue;
+      g.fillStyle=css('--p-'+(r.platform||'ont'));g.fillRect(X(a),y,(b-a)*CW,RH-1);
+      if(a===r.x){g.fillStyle=css((STATUS[r.st]||STATUS.single)[0]);g.fillText(r.rev?'<':'>',X(a)-CW,y)}
+      for(let c=a;c<b;c++){const ch=r.s[c-r.x],ref=refAt(c);
+        if(ch>='a'&&ch<='z'){g.fillStyle=css('--clip-bg');g.fillRect(X(c),y,CW,RH-1);g.fillStyle=css('--clip-ink');g.fillText(ch,X(c),y)}
+        else if(ch==='*'){g.fillStyle=css('--mm');g.fillText('*',X(c),y)}
+        else if(ch===ref){g.fillStyle=mut;g.fillText(dots?'·':ch,X(c),y)}
+        else{g.fillStyle=css('--mm');g.fillText(ch,X(c),y)}}
+      g.fillStyle=css('--ins');for(const [p] of r.ins){if(p>=a&&p<b)g.fillRect(X(p)-1,y,2,RH-1)}}});}
+function sizeCanvas(cv){const dpr=devicePixelRatio||1,W=cv.parentElement.clientWidth,H=cv.parentElement.clientHeight;
+  cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
+  g.font=`12px ${css('--mono')}`;g.textBaseline='top';return [g,W,H]}
+const problemSelect=()=>`<select class="ptype" title="problem search type (Ctrl-S next, Ctrl-R previous)">${Object.entries(S.problem_types).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join('')}</select>
+  <input class="pthr" style="width:48px" title="threshold"><button class="pprev" title="Ctrl-R">◀ prob</button><button class="pnext" title="Ctrl-S">prob ▶</button>`;
+
 // ------------------------------------------------------------------ contig editor (Gap5-style)
-const CW=8.4, RH=13, BASE={A:'#2b8a3e',C:'#1c7ed6',G:'#e67700',T:'#c92a2a'};
 class Editor{
   constructor(root,contig,center,label){
-    this.contig=contig;this.label=label||'';this.dots=true;
+    this.contig=contig;this.label=label||'';this.dots=true;this.scroll=0;
     root.insertAdjacentHTML('beforeend',`<div class="ed"><div class="edbar"><b></b><span class="muted lbl"></span><span class="sp"></span><span class="muted rows"></span>
-      <label class="muted"><input type="checkbox" class="dots" checked> dots for matches</label>
-      <button class="le" title="[">◀ L end</button><button class="pl">◀</button><input class="go" style="width:110px" placeholder="position"><button class="pr">▶</button><button class="re" title="]">R end ▶</button></div><div class="edcv"><canvas></canvas></div></div>`);
+      <label class="muted"><input type="checkbox" class="dots" checked> dots</label>${problemSelect()}
+      <button class="le" title="[">◀ L end</button><button class="pl">◀</button><input class="go" style="width:90px" placeholder="position"><button class="pr">▶</button><button class="re" title="]">R end ▶</button></div><div class="edcv"><canvas></canvas></div></div>`);
     this.el=root.lastElementChild;this.cv=this.el.querySelector('canvas');
-    this.el.querySelector('.dots').onchange=e=>{this.dots=e.target.checked;this.draw()};
-    this.el.querySelector('.le').onclick=()=>this.goto(0);
-    this.el.querySelector('.re').onclick=()=>this.goto(1e12);
-    this.el.querySelector('.pl').onclick=()=>this.goto(this.x0+this.ncol()/2-this.ncol()*.8);
-    this.el.querySelector('.pr').onclick=()=>this.goto(this.x0+this.ncol()/2+this.ncol()*.8);
-    this.el.querySelector('.go').onchange=e=>this.goto(+e.target.value);
-    this.cv.parentElement.onwheel=e=>{e.preventDefault();if(Math.abs(e.deltaX)>Math.abs(e.deltaY)||e.shiftKey)this.goto(this.x0+this.ncol()/2+Math.sign(e.deltaX||e.deltaY)*20);else{this.scroll=Math.max(0,(this.scroll||0)+Math.sign(e.deltaY)*3);this.draw()}};
-    this.cv.onclick=e=>{const r=this.cv.getBoundingClientRect();this.cursor=this.x0+Math.floor((e.clientX-r.left-70)/CW);this.draw()};
+    const q=s=>this.el.querySelector(s);
+    q('.dots').onchange=e=>{this.dots=e.target.checked;this.draw()};
+    q('.le').onclick=()=>this.goto(0);q('.re').onclick=()=>this.goto(1e12);
+    q('.pl').onclick=()=>this.goto(this.x0+this.ncol()/2-this.ncol()*.8);
+    q('.pr').onclick=()=>this.goto(this.x0+this.ncol()/2+this.ncol()*.8);
+    q('.go').onchange=e=>this.goto(+e.target.value-1);
+    q('.ptype').value=E.ptype;q('.pthr').value=S.problem_defaults[E.ptype];
+    q('.ptype').onchange=e=>{E.ptype=e.target.value;q('.pthr').value=S.problem_defaults[E.ptype]};
+    q('.pnext').onclick=()=>this.search(1);q('.pprev').onclick=()=>this.search(-1);
+    this.cv.parentElement.onwheel=e=>{e.preventDefault();if(Math.abs(e.deltaX)>Math.abs(e.deltaY)||e.shiftKey)this.goto(this.x0+this.ncol()/2+Math.sign(e.deltaX||e.deltaY)*20);else{this.scroll=Math.max(0,this.scroll+Math.sign(e.deltaY)*3);this.draw()}};
+    this.cv.onclick=e=>{const r=this.cv.getBoundingClientRect();this.cursor=this.x0+Math.floor((e.clientX-r.left-LX)/CW);this.draw();T.mark(this.contig,this.cursor)};
+    E.current=this.contig;
     this.goto(center);
   }
-  ncol(){return Math.max(10,Math.floor((this.cv.parentElement.clientWidth-70)/CW))}
+  ncol(){return Math.max(10,Math.floor((this.cv.parentElement.clientWidth-LX)/CW))}
+  async search(dir){
+    const type=this.el.querySelector('.ptype').value,thr=this.el.querySelector('.pthr').value;
+    const from=this.cursor!=null?this.cursor:this.x0+this.ncol()/2|0;
+    const r=await api(`/api/next?contig=${encodeURIComponent(this.contig)}&pos=${from}&type=${type}&thr=${thr}&dir=${dir}`);
+    if(r.start==null){toast(`no ${dir>0?'further':'earlier'} "${S.problem_types[type]}" in ${this.contig}`);return}
+    this.cursor=r.start;await this.goto(r.start);toast(`${S.problem_types[type]}: ${this.contig}:${r.start+1}${r.end-r.start>1?'-'+r.end:''}`);
+  }
   async goto(center){
-    this.len=this.len||Object.values(S.graph.segments).find(s=>s.name===this.contig).length;
+    this.len=this.len||S.graph.segments[S.segIdx[this.contig]].length;
     const n=this.ncol();let x0=Math.round(center-n/2);x0=Math.max(-n+20,Math.min(this.len-20,x0));this.x0=x0;
     if(!this.data||x0<this.data.start||x0+n>this.data.end){
       const tok=this.tok=Math.random();const d=await api(`/api/region?contig=${encodeURIComponent(this.contig)}&start=${x0-n}&end=${x0+2*n}`);
       if(tok!==this.tok)return;this.data=d;}
     this.el.querySelector('.edbar b').textContent=`${this.contig}:${Math.max(0,x0)+1}-${Math.max(0,Math.min(this.len,x0+n))}`;
     this.el.querySelector('.lbl').textContent=`${fmt(this.len)} ${this.label}`;
-    this.draw();
+    this.draw();T.mark(this.contig,x0+n/2);
   }
   draw(){
-    const cv=this.cv,dpr=devicePixelRatio||1,W=cv.parentElement.clientWidth,H=cv.parentElement.clientHeight;
-    cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';
-    const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);const d=this.data;if(!d)return;
-    const n=this.ncol(),X=c=>70+(c-this.x0)*CW, ink=css('--ink'),mut=css('--muted');
-    g.font=`12px ${css('--mono')}`;g.textBaseline='top';
-    // beyond the contig: shade
-    g.fillStyle=css('--bg');if(this.x0<0)g.fillRect(70,0,-this.x0*CW,H);if(this.x0+n>this.len)g.fillRect(X(this.len),0,(this.x0+n-this.len)*CW,H);
-    // contig ends
+    const [g,W,H]=sizeCanvas(this.cv);const d=this.data;if(!d)return;
+    const n=this.ncol(),X=c=>LX+(c-this.x0)*CW;
+    g.fillStyle=css('--bg');if(this.x0<0)g.fillRect(LX,0,-this.x0*CW,H);if(this.x0+n>this.len)g.fillRect(X(this.len),0,(this.x0+n-this.len)*CW,H);
     for(const e of [0,this.len]){if(e>=this.x0&&e<=this.x0+n){g.fillStyle=css('--accent');g.fillRect(X(e)-1,0,2,H)}}
-    if(this.cursor!=null){g.fillStyle=css('--hi');g.fillRect(X(this.cursor),0,CW,H)}
-    // ruler
-    g.fillStyle=mut;for(let c=Math.ceil(this.x0/10)*10;c<this.x0+n;c+=10){if(c<0||c>this.len)continue;g.fillRect(X(c),12,1,4);if(c%50===0)g.fillText(String(c+1),X(c)+2,0)}
-    const lab=(t,y)=>{g.fillStyle=mut;g.fillText(t,4,y)};
-    lab('contig',20);lab('consens',20+RH);lab('depth',20+2*RH);
-    for(let c=this.x0;c<this.x0+n;c++){const i=c-d.start;if(i<0||i>=d.ref.length)continue;const b=d.ref[i],cs=d.consensus[i];
-      g.fillStyle=BASE[b.toUpperCase()]||ink;g.fillText(b,X(c),20);
-      if(cs!==' '){g.fillStyle=cs!==b.toUpperCase()?css('--mm'):mut;g.fillText(cs,X(c),20+RH)}
-      const dp=d.depth[i];g.fillStyle=css('--accent');g.globalAlpha=.5;const h=Math.min(RH-2,dp/3);g.fillRect(X(c),20+3*RH-h-1,CW-1,h);g.globalAlpha=1}
-    const y0=20+3*RH+4, maxRows=Math.floor((H-y0)/RH), rows=d.rows.slice(this.scroll||0,(this.scroll||0)+maxRows);
-    rows.forEach((row,ri)=>{const y=y0+ri*RH;
-      for(const r of row){const a=Math.max(this.x0,r.x),b=Math.min(this.x0+n,r.x+r.s.length);if(a>=b)continue;
-        g.fillStyle=css('--p-'+(r.platform||'ont'));g.fillRect(X(a),y,(b-a)*CW,RH-1);
-        if(a===r.x){g.fillStyle=mut;g.fillText(r.rev?'<':'>',X(a)-CW,y)}
-        for(let c=a;c<b;c++){const ch=r.s[c-r.x],ri2=c-d.start,ref=ri2>=0&&ri2<d.ref.length?d.ref[ri2].toUpperCase():'';
-          if(ch>='a'&&ch<='z'){g.fillStyle=css('--clip-bg');g.fillRect(X(c),y,CW,RH-1);g.fillStyle=css('--clip-ink');g.fillText(ch,X(c),y)}
-          else if(ch==='*'){g.fillStyle=css('--mm');g.fillText('*',X(c),y)}
-          else if(ch===ref){g.fillStyle=mut;g.fillText(this.dots?'·':ch,X(c),y)}
-          else {g.fillStyle=css('--mm');g.fillText(ch,X(c),y)}}
-        g.fillStyle=css('--ins');for(const [p,s] of r.ins){if(p>=a&&p<b)g.fillRect(X(p)-1,y,2,RH-1)}}});
-    this.el.querySelector('.rows').textContent=d.rows.length>maxRows?`rows ${(this.scroll||0)+1}–${Math.min(d.rows.length,(this.scroll||0)+maxRows)} of ${d.rows.length}`:`${d.rows.length} rows`;
-    g.fillStyle=mut;g.fillText('reads',4,y0);
+    if(this.cursor!=null){g.fillStyle=css('--hi');g.fillRect(X(this.cursor),0,CW,H);g.strokeStyle=css('--accent');g.strokeRect(X(this.cursor),0,CW,H)}
+    drawRuler(g,this.x0,n,X,0,0,this.len,c=>String(c+1));
+    const at=i=>i>=0&&i<d.ref.length?d.ref[i].toUpperCase():' ';
+    drawSeqLine(g,20,d.ref,null,d.start,this.x0,n,X,null,'contig');
+    drawSeqLine(g,20+RH,d.consensus,d.qual,d.start,this.x0,n,X,c=>at(c-d.start),'consens');
+    g.fillStyle=css('--muted');g.fillText('depth',4,20+2*RH);drawDepth(g,20+2*RH,d.depth,d.start,this.x0,n,X);
+    const y0=20+3*RH+4,maxRows=Math.floor((H-y0)/RH);
+    drawRows(g,d.rows,y0,1,maxRows,this.scroll,this.x0,n,X,c=>at(c-d.start),this.dots);
+    this.el.querySelector('.rows').textContent=d.rows.length>maxRows?`rows ${this.scroll+1}–${Math.min(d.rows.length,this.scroll+maxRows)}/${d.rows.length}`:`${d.rows.length} rows`;
+    g.fillStyle=css('--muted');g.fillText('reads',4,y0);
   }
 }
-const E={eds:[],
+
+// ------------------------------------------------------------------ join editor (after Gap5)
+// One canvas, one coordinate system: contig A ends at x=0, B starts at x=gap.
+// A's reads stack upward above A's consensus, then the differences line,
+// then B's consensus with B's reads below -- both scroll together.
+class JoinEditor{
+  constructor(root,cand){
+    this.c=cand;this.gap=cand.gap;this.dots=true;this.scrollA=0;this.scrollB=0;this.contig=cand.a[0];
+    root.insertAdjacentHTML('beforeend',`<div class="ed"><div class="edbar"><b>Join editor</b><span class="muted lbl"></span><span class="sp"></span>
+      <label class="muted"><input type="checkbox" class="dots" checked> dots</label>
+      gap <input class="gapj" type="number" style="width:70px" value="${cand.gap}" title="negative = overlap; changes the register of B">
+      <button class="pl">◀</button><button class="mid" title="centre on the join point">join pt</button><button class="pr">▶</button>
+      <button class="al" title="align the overlapping consensus sequences">Align</button><button class="primary jn">Join…</button></div><div class="edcv"><canvas></canvas></div></div>`);
+    this.el=root.lastElementChild;this.cv=this.el.querySelector('canvas');const q=s=>this.el.querySelector(s);
+    q('.dots').onchange=e=>{this.dots=e.target.checked;this.draw()};
+    q('.pl').onclick=()=>this.goto(this.x0+this.ncol()/2-this.ncol()*.8);
+    q('.pr').onclick=()=>this.goto(this.x0+this.ncol()/2+this.ncol()*.8);
+    q('.mid').onclick=()=>this.goto(Math.min(0,this.gap)/2);
+    q('.gapj').onchange=e=>{this.gap=+e.target.value;$('#gapIn')&&($('#gapIn').value=this.gap);this.data=null;this.goto(this.x0+this.ncol()/2)};
+    q('.al').onclick=()=>this.align(true);q('.jn').onclick=()=>this.join();
+    q('.lbl').textContent=`${cand.a.join(':')} ⟷ ${cand.b.join(':')}`;
+    this.cv.parentElement.onwheel=e=>{e.preventDefault();const r=this.cv.getBoundingClientRect(),top=e.clientY-r.top<r.height/2;
+      if(Math.abs(e.deltaX)>Math.abs(e.deltaY)||e.shiftKey)this.goto(this.x0+this.ncol()/2+Math.sign(e.deltaX||e.deltaY)*20);
+      else{if(top)this.scrollA=Math.max(0,this.scrollA-Math.sign(e.deltaY)*3);else this.scrollB=Math.max(0,this.scrollB+Math.sign(e.deltaY)*3);this.draw()}};
+    E.current=cand.a[0];this.len=1e12;
+    this.goto(Math.min(0,this.gap)/2);
+  }
+  req(){return encodeURIComponent(JSON.stringify({a:this.c.a,b:this.c.b,gap:this.gap}))}
+  ncol(){return Math.max(10,Math.floor((this.cv.parentElement.clientWidth-LX)/CW))}
+  async goto(center){
+    const n=this.ncol();const x0=Math.round(center-n/2);this.x0=x0;
+    if(!this.data||x0<this.data.start||x0+n>this.data.end){const tok=this.tok=Math.random();
+      const d=await api(`/api/joinview?req=${this.req()}&start=${x0-n}&end=${x0+2*n}`);if(tok!==this.tok)return;this.data=d}
+    this.draw();
+  }
+  async align(show){
+    const r=await api(`/api/joinalign?req=${this.req()}`);this.al=r;
+    if(show&&$('#endinfo'))$('#endinfo').innerHTML=`<h3>Overlap alignment</h3>${r.overlap?`<table class="kv"><tr><td>overlap</td><td>${r.overlap} bp${r.aligned<r.overlap?` (first ${r.aligned} aligned)`:''}</td></tr><tr><td>identity</td><td>${r.identity}%</td></tr><tr><td>mismatches · indels</td><td>${r.mismatches} · ${r.indels}</td></tr></table>`:''}<pre class="seq" style="max-height:260px">${esc(r.text)}</pre>`;
+    return r;
+  }
+  async join(){
+    const r=await this.align(true);
+    const msg=r.overlap?`Overlap ${r.overlap} bp, ${r.identity}% identity (${r.mismatches} mismatches, ${r.indels} indels).`:`No overlap: ${this.gap} bp gap, filled with N.`;
+    if(!confirm(`${this.c.a.join(':')} ⟷ ${this.c.b.join(':')}\n${msg}\n\nMake this ${sameScaffold(this.c)?'circle closure':'join'}?`))return;
+    const ok=await doOp({op:'join',id:this.c.id,gap:this.gap,reason:`join editor${r.overlap?` ovl ${r.overlap} ${r.identity}%`:''}`});
+    if(ok)nextCand(1);
+  }
+  draw(){
+    const [g,W,H]=sizeCanvas(this.cv);const d=this.data;if(!d)return;
+    const n=this.ncol(),X=c=>LX+(c-this.x0)*CW,mut=css('--muted');
+    const mid=Math.max(4*RH+10,Math.floor(H/2/RH)*RH);
+    // shading outside each contig, both join ends
+    const shade=(lo,hi,y,h)=>{g.fillStyle=css('--bg');if(this.x0<lo)g.fillRect(LX,y,(Math.min(lo,this.x0+n)-this.x0)*CW,h);if(this.x0+n>hi)g.fillRect(X(Math.max(hi,this.x0)),y,(this.x0+n-Math.max(hi,this.x0))*CW,h)};
+    shade(d.a_range[0],d.a_range[1],0,mid);shade(d.b_range[0],d.b_range[1],mid+RH,H-mid-RH);
+    g.fillStyle=css('--accent');g.fillRect(X(0)-1,0,2,mid);g.fillRect(X(d.b_range[0])-1,mid+RH,2,H-mid-RH);
+    if(d.gap<0){g.fillStyle=css('--hi');g.fillRect(X(d.gap),mid-2*RH,(-d.gap)*CW,4*RH)}
+    const A=d.A,B=d.B,atA=c=>{const i=c-d.start;return i>=0&&i<A.ref.length?A.ref[i].toUpperCase():' '},atB=c=>{const i=c-d.start;return i>=0&&i<B.ref.length?B.ref[i].toUpperCase():' '};
+    // A (flipped: consensus at the bottom, reads above)
+    drawSeqLine(g,mid-2*RH,A.ref,null,d.start,this.x0,n,X,null,`${A.contig}${A.rev?' (−)':''}`);
+    drawSeqLine(g,mid-RH,A.consensus,A.qual,d.start,this.x0,n,X,atA,'consA');
+    drawRows(g,A.rows,mid-2*RH-2,-1,Math.floor((mid-2*RH-20)/RH),this.scrollA,this.x0,n,X,atA,this.dots);
+    // differences line
+    g.fillStyle=mut;g.fillText('diffs',4,mid);let nd=0,no=0;
+    for(let c=this.x0;c<this.x0+n;c++){const i=c-d.start,a=A.consensus[i],b=B.consensus[i];if(!a||!b||a===' '||b===' ')continue;no++;
+      if(a!==b){nd++;g.fillStyle=css('--mm');g.fillText('!',X(c),mid)}else{g.fillStyle=mut;g.fillText(':',X(c),mid)}}
+    drawSeqLine(g,mid+RH,B.consensus,B.qual,d.start,this.x0,n,X,atB,'consB');
+    drawSeqLine(g,mid+2*RH,B.ref,null,d.start,this.x0,n,X,null,`${B.contig}${B.rev?' (−)':''}`);
+    drawRows(g,B.rows,mid+3*RH+2,1,Math.floor((H-mid-3*RH)/RH),this.scrollB,this.x0,n,X,atB,this.dots);
+    drawRuler(g,this.x0,n,X,0,-1e12,1e12,c=>String(c));
+    g.fillStyle=mut;g.fillText(`join x=${this.x0}…${this.x0+n} · ${no?`${nd} diffs in ${no} overlapping cols`:'no overlap in view'}`,LX,H-RH);
+  }
+}
+
+const E={eds:[],ptype:'contig',current:null,
   clear(){$('#editors').innerHTML='';this.eds=[]},
-  single(contig,pos){this.clear();this.eds.push(new Editor($('#editors'),contig,pos))},
-  junction(c){this.clear();
-    for(const [ctg,side] of [c.a,c.b]){const len=S.graph.segments[S.segIdx[ctg]].length;
-      this.eds.push(new Editor($('#editors'),ctg,side==='L'?0:len,`· showing ${side} end — orange = soft-clipped bases running off the end`))}},
+  single(contig,pos){this.clear();this.eds.push(new Editor($('#editors'),contig,pos));T.show(contig,pos)},
+  join(c){this.clear();this.eds.push(new JoinEditor($('#editors'),c));T.show(c.a[0])},
   redraw(){this.eds.forEach(e=>e.draw())}};
+
+// ------------------------------------------------------------------ template display (after Gap5)
+const T={contig:null,v0:0,v1:1,data:null,logy:true,mk:null,
+  show(contig,pos){if(this.contig!==contig){this.contig=contig;const L=S.graph.segments[S.segIdx[contig]].length;this.v0=0;this.v1=L;this.data=null;
+      const sel=$('#tcontig');if(sel)sel.value=contig}if(topv==='template')this.fetch()},
+  mark(contig,x){if(contig===this.contig){this.mk=x;if(topv==='template')this.draw()}},
+  async fetch(){if(!this.contig)return;const d=this.data;
+    if(!d||this.v0<d.q0||this.v1>d.q1||(this.v1-this.v0)<(d.q1-d.q0)/4){const span=this.v1-this.v0,q0=Math.max(0,Math.floor(this.v0-span/2)),q1=Math.ceil(this.v1+span/2);
+      const tok=this.tok=Math.random();const r=await api(`/api/templates?contig=${encodeURIComponent(this.contig)}&start=${q0}&end=${q1}`);if(tok!==this.tok)return;
+      r.q0=q0;r.q1=q1;this.data=r}
+    this.draw()},
+  draw(){
+    const cv=$('#tcv');if(!cv||!cv.parentElement.clientWidth)return;const [g,W,H]=sizeCanvas(cv);g.font='11px system-ui';
+    const d=this.data;if(!d){g.fillStyle=css('--muted');g.fillText('Click a contig or a join to show its templates.',12,40);return}
+    const DH=70,top0=34,PH=H-DH-top0-16,X=x=>(x-this.v0)/(this.v1-this.v0)*W;
+    const ys=d.items.map(i=>i.y),ymax=Math.max(...ys,10),ymin=Math.max(1,Math.min(...ys,100));
+    const Y=v=>top0+(this.logy?(Math.log(Math.max(v,1))-Math.log(ymin))/(Math.log(ymax)-Math.log(ymin)||1):(v/ymax))*PH;
+    // insert-size band
+    for(const st of Object.values(d.insert_stats||{})){g.fillStyle=css('--hi');g.fillRect(0,Y(st.lo),W,Math.max(1,Y(st.hi)-Y(st.lo)))}
+    for(const it of d.items){const x0=X(it.x0),x1=X(it.x1);if(x1<0||x0>W)continue;const y=Y(it.y);
+      let col;if(it.s==='consistent'){const l=40+Math.min(60,it.q)*0.8;col=`hsl(220,8%,${100-l}%)`;if(matchMedia('(prefers-color-scheme: dark)').matches&&document.documentElement.dataset.theme!=='light')col=`hsl(220,8%,${l}%)`}
+      else col=css(STATUS[it.s][0]);
+      g.strokeStyle=col;g.lineWidth=it.s==='consistent'?1:1.6;g.beginPath();g.moveTo(x0,y);g.lineTo(Math.max(x1,x0+1),y);g.stroke();
+      if(it.r.length>1&&x1-x0>6){for(const [a,b,rv] of it.r){g.strokeStyle=rv?css('--st-rev'):css('--st-fwd');g.beginPath();g.moveTo(X(a),y);g.lineTo(Math.max(X(b),X(a)+1),y);g.stroke()}}}
+    // axes / labels
+    g.fillStyle=css('--muted');g.fillText(`${this.logy?'log ':''}template size`,W-130,top0-14);
+    for(const v of [100,1000,10000,100000]){if(v<ymin||v>ymax)continue;const y=Y(v);g.fillRect(0,y,4,1);g.fillText(fmt(v),6,y-5)}
+    // depth track
+    const dt=d.depth,dy=H-DH-4;g.strokeStyle=css('--line');g.beginPath();g.moveTo(0,dy);g.lineTo(W,dy);g.stroke();
+    const mx=Math.max(1,...dt.reads,...dt.templates);
+    for(const [arr,col] of [[dt.reads,'--accent'],[dt.templates,'--st-span']]){g.strokeStyle=css(col);g.lineWidth=1.2;g.beginPath();
+      arr.forEach((v,i)=>{const x=X(dt.start+i*dt.step),y=dy+DH-4-v/mx*(DH-8);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke()}
+    g.fillStyle=css('--muted');g.fillText(`depth: reads (blue) · templates (orange) · max ${Math.round(mx)}`,4,dy+2);
+    // ruler & editor marker
+    g.fillStyle=css('--muted');const span=this.v1-this.v0,raw=span/8,mag=Math.pow(10,Math.floor(Math.log10(raw))),step=[1,2,5,10].map(k=>k*mag).find(v=>v>=raw);
+    for(let x=Math.ceil(this.v0/step)*step;x<this.v1;x+=step){g.fillRect(X(x),H-14,1,4);g.fillText(fmt(x),X(x)+2,H-12)}
+    if(this.mk!=null){g.fillStyle=css('--accent');g.fillRect(X(this.mk)-1,top0,2,H-top0-14)}
+    const c=d.counts,lg=$('#tlegend');if(lg)lg.innerHTML=Object.entries(STATUS).filter(([k])=>c[k]).map(([k,[v,l]])=>`<span title="${l}"><span class="sw" style="background:${css(v)}"></span>${k} ${c[k]}</span>`).join(' ')+(d.sampled?' <span class="muted">(sampled)</span>':'');
+  }};
+(function(){const cv=$('#tcv');let drag=null;
+  cv.onwheel=e=>{e.preventDefault();const r=cv.getBoundingClientRect(),fx=(e.clientX-r.left)/r.width,x=T.v0+fx*(T.v1-T.v0),f=e.deltaY<0?0.8:1.25;
+    const L=S.graph.segments[S.segIdx[T.contig]].length;let span=Math.min(L*1.1,Math.max(200,(T.v1-T.v0)*f));T.v0=x-fx*span;T.v1=T.v0+span;T.fetch()};
+  cv.onmousedown=e=>{drag={x:e.clientX,v0:T.v0,v1:T.v1,m:0}};
+  window.addEventListener('mousemove',e=>{if(!drag)return;drag.m+=Math.abs(e.movementX);const dx=(e.clientX-drag.x)/cv.clientWidth*(drag.v1-drag.v0);T.v0=drag.v0-dx;T.v1=drag.v1-dx;T.draw()});
+  window.addEventListener('mouseup',e=>{if(!drag)return;const moved=drag.m;drag=null;
+    if(moved<4&&e.target===cv){const r=cv.getBoundingClientRect(),x=Math.round(T.v0+(e.clientX-r.left)/r.width*(T.v1-T.v0));E.single(T.contig,x)}else T.fetch()});
+})();
+let topv='graph';
+function setTop(t){topv=t;document.querySelectorAll('#toptabs button').forEach(b=>b.classList.toggle('on',b.dataset.v===t));
+  $('#gview').style.display=t==='graph'?'block':'none';$('#tview').style.display=t==='template'?'flex':'none';
+  if(t==='graph')G.draw();else{if(!T.contig&&S)T.show(E.current||S.graph.segments[0].name);T.fetch()}}
 
 // ------------------------------------------------------------------ Hi-C heatmap
 async function drawHiC(){
@@ -405,11 +578,16 @@ async function drawHiC(){
 
 // ------------------------------------------------------------------ keys
 window.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;const ed=E.eds[E.eds.length-1];
+  if(e.ctrlKey&&(e.key==='s'||e.key==='r')&&ed&&ed.search){e.preventDefault();ed.search(e.key==='s'?1:-1);return}
+  if(e.key==='t'){setTop(topv==='graph'?'template':'graph');return}
   if(e.key==='j')nextCand(1);else if(e.key==='k')nextCand(-1);else if(e.key==='a')acceptSel();else if(e.key==='x')rejectSel();
   else if(e.key==='u')doOp({op:'undo'});
   else if(ed&&e.key==='ArrowRight')ed.goto(ed.x0+ed.ncol()/2+(e.shiftKey?ed.ncol():20));
   else if(ed&&e.key==='ArrowLeft')ed.goto(ed.x0+ed.ncol()/2-(e.shiftKey?ed.ncol():20));
-  else if(ed&&e.key==='[')ed.goto(0);else if(ed&&e.key===']')ed.goto(1e12);});
+  else if(ed&&e.key==='['&&ed.len<1e12)ed.goto(0);else if(ed&&e.key===']'&&ed.len<1e12)ed.goto(1e12);});
+$('#toptabs').onclick=e=>{const v=e.target.dataset.v;if(v)setTop(v)};
+$('#tcontig').onchange=e=>{T.contig=null;T.show(e.target.value)};
+$('#tlog').onchange=e=>{T.logy=e.target.checked;T.draw()};
 load();
 </script>
 </body>

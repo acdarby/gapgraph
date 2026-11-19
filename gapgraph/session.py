@@ -1,10 +1,11 @@
 """Load inputs, compute all evidence, answer editor queries."""
 import os
 from .gfa import AssemblyGraph
-from .seqs import read_fasta
+from .seqs import read_fasta, revcomp
 from .alignments import (AlignmentStore, read_alignments, read_paf, hits_from_alignments,
                          render_read, PLATFORM_DEFAULTS)
-from . import softclip, longreads, evidence, circular
+from . import softclip, longreads, evidence, circular, pairs, joinedit
+from .consensus import Pileup, DEFAULT_THRESHOLDS, PROBLEM_LABELS
 from .hic import HiC, read_pairs
 from .project import Project
 
@@ -65,7 +66,20 @@ class Session:
                 h["platform"] = plat
                 self.hotspots.append(h)
         self.lr_joins, self.lr_paths = longreads.bridges(self.hits)
-        self.candidates = evidence.build_candidates(self.graph, clip_joins, self.lr_joins, self.hic, self.lr_paths)
+        # read pairs (Gap5 "Find Read Pairs")
+        self.insert_stats = {}
+        self.pair_joins = {}
+        for plat, st in self.stores.items():
+            stats = pairs.insert_stats(st)
+            if stats:
+                self.insert_stats.update(stats)
+                for k, v in pairs.spanning_joins(st, self.lengths, stats).items():
+                    m = self.pair_joins.setdefault(k, {"pairs": 0, "gap": v["gap"]})
+                    m["pairs"] += v["pairs"]
+        self.other_contigs = pairs.other_contig_index(self.stores)
+        self._pileups = {}
+        self.candidates = evidence.build_candidates(self.graph, clip_joins, self.lr_joins, self.hic,
+                                                    self.lr_paths, self.pair_joins)
         # snap read-based gap estimates to an exact sequence overlap where one exists
         for c in self.candidates:
             c["gap_reads"] = c["gap"]
@@ -128,6 +142,9 @@ class Session:
             "has_hic": self.hic is not None,
             "circular": self.circular,
             "start_genes": list(self.start_genes),
+            "insert_stats": self.insert_stats,
+            "problem_types": PROBLEM_LABELS,
+            "problem_defaults": DEFAULT_THRESHOLDS,
         }
 
     def region(self, contig, start, end, max_rows=400, overhang=20000):
@@ -135,6 +152,8 @@ class Session:
         soft-clipped bases of reads running off the end stay visible."""
         L = self.lengths[contig]
         start, end = max(-overhang, start), min(L + overhang, end)
+        if end <= start:
+            end = start + 1
         rows, row_end, reads = [], [], []
         for plat in sorted(self.stores):
             reads.extend(self.stores[plat].fetch(contig, start, end))
@@ -143,6 +162,7 @@ class Session:
             r = render_read(a, start, end)
             if not r["s"]:
                 continue
+            r["st"] = pairs.classify(a, self.insert_stats, self.other_contigs)
             x0 = r["x"]
             for i, e in enumerate(row_end):
                 if e <= x0:
@@ -159,20 +179,110 @@ class Session:
             for x in range(max(start, a.pos), min(end, a.end)):
                 depth[x - start] += 1
         ref = " " * max(0, -start) + self.seqs[contig][max(0, start):min(L, end)] + " " * max(0, end - L)
+        cons, qual = self.consensus_window(contig, start, end)
         return {"contig": contig, "start": start, "end": end, "length": L,
-                "ref": ref, "rows": rows, "depth": depth,
-                "consensus": self._consensus(rows, start, end)}
+                "ref": ref, "rows": rows, "depth": depth, "consensus": cons, "qual": qual}
 
-    @staticmethod
-    def _consensus(rows, start, end):
-        from collections import Counter
-        cols = [Counter() for _ in range(end - start)]
-        for row in rows:
-            for r in row:
-                for i, ch in enumerate(r["s"]):
-                    if ch.isupper() or ch == "*":
-                        cols[r["x"] - start + i][ch] += 1
-        return "".join(c.most_common(1)[0][0] if c else " " for c in cols)
+    # ------------------------------------------------- consensus & problems
+    def pileup(self, contig):
+        P = self._pileups.get(contig)
+        if P is None:
+            alns = (a for st in self.stores.values() for a in st.by_ref.get(contig, []))
+            P = self._pileups[contig] = Pileup(contig, self.lengths[contig]).add_alignments(alns)
+        return P
+
+    def consensus_window(self, contig, start, end):
+        P = self.pileup(contig)
+        L = self.lengths[contig]
+        lo, hi = max(0, start), min(L, end)
+        pad_l, pad_r = max(0, -start) if start < 0 else 0, max(0, end - L)
+        cons = " " * pad_l + P.consensus_string(lo, hi) + " " * pad_r
+        qual = [0] * pad_l + P.qual[lo:hi].tolist() + [0] * pad_r
+        return cons, qual
+
+    def problems(self, contig, kind, thr=None):
+        thr = DEFAULT_THRESHOLDS[kind] if thr is None else float(thr)
+        P = self.pileup(contig)
+        return P.regions(P.masks(self.seqs[contig], kind, thr))
+
+    def next_problem(self, contig, pos, kind, thr=None, direction=1):
+        regs = self.problems(contig, kind, thr)
+        if direction > 0:
+            for s, e in regs:
+                if s > pos:
+                    return {"start": s, "end": e}
+        else:
+            for s, e in reversed(regs):
+                if s < pos:
+                    return {"start": s, "end": e}
+        return None
+
+    def problems_summary(self, kind, thr=None, limit=500):
+        out = []
+        for c in self.seqs:
+            for s, e in self.problems(c, kind, thr):
+                out.append({"contig": c, "start": s, "end": e})
+                if len(out) >= limit:
+                    return out
+        return out
+
+    # ------------------------------------------------- template display
+    def templates(self, contig, start, end):
+        res = pairs.templates(self.stores, contig, start, end, self.insert_stats, self.other_contigs)
+        res["depth"] = pairs.depth_track(self.stores, contig, self.lengths[contig], start, end)
+        res["length"] = self.lengths[contig]
+        res["insert_stats"] = self.insert_stats
+        return res
+
+    # ------------------------------------------------- join editor
+    def _join_ends(self, req):
+        c = self.cand_by_id.get(req.get("id"))
+        if c:
+            return tuple(c["a"]), tuple(c["b"]), int(req.get("gap", c["gap"])), c
+        return tuple(req["a"]), tuple(req["b"]), int(req.get("gap", 0)), None
+
+    def joinview(self, req, start, end, max_rows=200):
+        a, b, gap, c = self._join_ends(req)
+        la, lb = self.lengths[a[0]], self.lengths[b[0]]
+        a_rev, b_rev, a_off, b_off = joinedit.layout(a, b, gap, la, lb)
+        out = {"a": list(a), "b": list(b), "gap": gap, "start": start, "end": end,
+               "a_range": [a_off, 0], "b_range": [b_off, b_off + lb]}
+        for key, (ctg, L, rev, off) in (("A", (a[0], la, a_rev, a_off)), ("B", (b[0], lb, b_rev, b_off))):
+            # join window -> oriented contig cols -> original cols
+            o0, o1 = start - off, end - off
+            if rev:
+                f0, f1 = L - o1, L - o0
+            else:
+                f0, f1 = o0, o1
+            reg = self.region(ctg, f0, f1, max_rows=max_rows)
+            rows = []
+            for row in reg["rows"]:
+                nr = []
+                for r in row:
+                    r2 = joinedit.orient_read(r, L, rev)
+                    r2 = dict(r2, x=r2["x"] + off, ins=[[p + off, s] for p, s in r2["ins"]])
+                    nr.append(r2)
+                rows.append(nr)
+            ref, cons, qual, depth = reg["ref"], reg["consensus"], reg["qual"], reg["depth"]
+            if rev:
+                ref = ref.translate(joinedit._COMP)[::-1]
+                cons = cons.translate(joinedit._COMP)[::-1]
+                qual, depth = qual[::-1], depth[::-1]
+            out[key] = {"contig": ctg, "rev": rev, "rows": rows, "ref": ref, "consensus": cons,
+                        "qual": qual, "depth": depth}
+        return out
+
+    def oriented_seq(self, end, right):
+        s = self.seqs[end[0]]
+        if right:   # end on the right
+            return s if end[1] == "R" else revcomp(s)
+        return s if end[1] == "L" else revcomp(s)
+
+    def joinalign(self, req):
+        a, b, gap, c = self._join_ends(req)
+        res = joinedit.align_overlap(self.oriented_seq(a, True), self.oriented_seq(b, False), gap)
+        res.update(a=list(a), b=list(b), gap=gap)
+        return res
 
     def end_detail(self, contig, side):
         clips = self.clips.get((contig, side), [])

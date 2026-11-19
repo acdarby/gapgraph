@@ -183,3 +183,90 @@ def test_rotation_flip_consistency():
     rc = revcomp(circle)
     k = len(circle) - 1 - 50
     assert out == rc[k:] + rc[:k] and out[0] == revcomp(circle[50])
+
+
+# ------------------------------------------- consensus, problems, pairs, join editor
+from gapgraph.alignments import Alignment, parse_cigar, AlignmentStore
+from gapgraph.consensus import Pileup
+from gapgraph import pairs as pairs_mod, joinedit
+
+
+def _aln(name, ref, pos, cigar, seq, platform="illumina", flag=0, mate_ref="", mate_pos=-1, tlen=0, mapq=60):
+    cg = parse_cigar(cigar)
+    rlen = sum(n for n, op in cg if op in "MD")
+    return Alignment(name, ref, pos, pos + rlen, bool(flag & 16), mapq, cg, seq, 0, 0, 0, 0, False,
+                     len(seq), platform, flag, mate_ref, mate_pos, tlen, "")
+
+
+def test_consensus_finds_substitution_deletion_insertion():
+    import random
+    rng = random.Random(4)
+    contig = "".join(rng.choice("ACGT") for _ in range(300))
+    # truth differs from the contig: sub at 50, contig has an extra base at 150,
+    # contig is missing a base before 250
+    truth = contig[:50] + ("A" if contig[50] != "A" else "C") + contig[51:150] + contig[151:250] + "G" + contig[250:]
+    alns = []
+    for k in range(12):
+        # reads = truth; express their alignment to the contig
+        seq = truth
+        cig = "150M1D99M1I50M"   # 0-149 match(50 is a mismatch), skip contig 150, ..., insert G before 250
+        alns.append(_aln(f"r{k}", "c", 0, cig, seq))
+    P = Pileup("c", len(contig)).add_alignments(alns)
+    regs = P.regions(P.masks(contig, "contig", 3), merge=0)
+    assert [r[0] for r in regs] == [50, 150, 250]
+    assert P.qual[10] == 100 and P.consensus_string(150, 151) == "*"
+
+
+def test_problem_search_finds_planted_error(circ):
+    d, r = circ
+    S = _session(r)
+    s = S.seqs["chr_1"]
+    S.seqs["chr_1"] = s[:2000] + ("A" if s[2000] != "A" else "C") + s[2001:]
+    S._pileups.clear()
+    assert S.problems("chr_1", "contig") == [[2000, 2001]]
+    assert S.next_problem("chr_1", 0, "contig")["start"] == 2000
+    assert S.next_problem("chr_1", 2500, "contig") is None
+    assert S.next_problem("chr_1", 2500, "contig", direction=-1)["start"] == 2000
+
+
+def test_pairs_insert_size_and_spanning(circ):
+    d, r = circ
+    S = _session(r)
+    st = S.insert_stats["illumina"]
+    assert 470 <= st["median"] <= 530
+    c = S.cand_by_id["chr_1:R~chr_2:R"]
+    assert c["pair_reads"] >= 10 and abs(c["pair_gap"] + 300) < 40
+    t = S.templates("chr_1", 0, S.lengths["chr_1"])
+    assert t["counts"].get("consistent", 0) > 100 and t["counts"].get("spanning", 0) > 0
+
+
+def test_pair_classification():
+    stats = {"illumina": {"lo": 300, "hi": 700, "median": 500, "sd": 50}}
+    ok = _aln("p", "c", 100, "150M", "A" * 150, flag=1 | 32 | 64, mate_ref="c", mate_pos=450, tlen=500)
+    assert pairs_mod.classify(ok, stats) == "consistent"
+    same = _aln("p", "c", 100, "150M", "A" * 150, flag=1 | 64, mate_ref="c", mate_pos=450, tlen=500)
+    assert pairs_mod.classify(same, stats) == "orientation"
+    far = _aln("p", "c", 100, "150M", "A" * 150, flag=1 | 32 | 64, mate_ref="c", mate_pos=5000, tlen=5050)
+    assert pairs_mod.classify(far, stats) == "size"
+    other = _aln("p", "c", 100, "150M", "A" * 150, flag=1 | 32 | 64, mate_ref="d", mate_pos=10)
+    assert pairs_mod.classify(other, stats) == "spanning"
+
+
+def test_join_view_overlaps_agree_in_register(circ):
+    d, r = circ
+    S = _session(r)
+    for cid in ("chr_1:R~chr_2:R", "chr_1:L~chr_2:L", "plasmid:L~plasmid:R"):
+        g = S.cand_by_id[cid]["gap"]
+        v = S.joinview({"id": cid}, g - 30, 30)
+        cols = [(v["A"]["consensus"][x - v["start"]], v["B"]["consensus"][x - v["start"]]) for x in range(g, 0)]
+        assert cols and all(a == b for a, b in cols), cid
+        al = S.joinalign({"id": cid})
+        assert al["identity"] == 100.0 and al["overlap"] == -g
+
+
+def test_banded_align_indels():
+    a = "ACGTACGTTAGCATCGATCGGATCGATTACG"
+    b = a[:10] + a[11:20] + "T" + a[20:]
+    x, y = joinedit.banded_align(a, b)
+    assert x.replace("*", "") == a and y.replace("*", "") == b
+    assert x.count("*") == 1 and y.count("*") == 1

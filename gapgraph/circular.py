@@ -120,6 +120,7 @@ def circularity_report(graph, candidates, seqs):
             "end_overlap": ovl,
             "wrap_longreads": c["longread_reads"] if c else 0,
             "wrap_softclips": c["softclip_reads"] if c else 0,
+            "wrap_pairs": c.get("pair_reads", 0) if c else 0,
             "score": c["score"] if c else 0.0,
             "suggested_gap": -ovl if ovl else (c["gap"] if c else 0),
         })

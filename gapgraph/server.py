@@ -42,6 +42,20 @@ def make_handler(session, export_prefix):
                 if u.path == "/api/hic":
                     with lock:
                         return self._send(200, session.hic_matrix() or {})
+                if u.path == "/api/problems":
+                    if "contig" in q:
+                        return self._send(200, session.problems(q["contig"], q["type"], q.get("thr")))
+                    return self._send(200, session.problems_summary(q["type"], q.get("thr")))
+                if u.path == "/api/next":
+                    return self._send(200, session.next_problem(q["contig"], int(q["pos"]), q["type"],
+                                                                q.get("thr"), int(q.get("dir", 1))) or {})
+                if u.path == "/api/templates":
+                    return self._send(200, session.templates(q["contig"], int(q["start"]), int(q["end"])))
+                if u.path == "/api/joinview":
+                    req = json.loads(q["req"])
+                    return self._send(200, session.joinview(req, int(q["start"]), int(q["end"])))
+                if u.path == "/api/joinalign":
+                    return self._send(200, session.joinalign(json.loads(q["req"])))
                 if u.path == "/api/coverage":
                     out = {}
                     for plat, st in session.stores.items():

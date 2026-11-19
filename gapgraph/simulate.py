@@ -123,6 +123,43 @@ def _block_alignment(ops, blk, qname, rev_read, mapq=60):
             "qlen": qlen, "rend": pos + sum(1 for op, _, _ in seg if op != "I")}
 
 
+def _write_pairs(fh, rng, ext, blocks, p, n_pairs, start_range, prefix, insert=(500, 50)):
+    """Paired-end FR reads with full SAM mate fields."""
+    rl = p["len"][0]
+    for k in range(n_pairs):
+        ins = max(2 * rl, int(rng.gauss(*insert)))
+        gs = rng.randrange(*start_range)
+        if gs + ins > len(ext):
+            continue
+        qname = f"{prefix}{k}"
+        prim = []
+        for mate, (a, b, rev) in enumerate(((gs, gs + rl, False), (gs + ins - rl, gs + ins, True))):
+            ops = _simulate_read(rng, ext, a, b, p)
+            alns = [x for x in (_block_alignment(ops, blk, qname, rev) for blk in blocks) if x]
+            alns.sort(key=lambda x: -x["aligned"])
+            prim.append(alns)
+        for mate in (0, 1):
+            alns, other = prim[mate], prim[1 - mate]
+            o = other[0] if other else None
+            for i, a in enumerate(alns):
+                flag = 1 | (64 if mate == 0 else 128) | (16 if a["reverse"] else 0) | (2048 if i else 0)
+                if o is None:
+                    flag |= 8
+                    rnext, pnext, tlen = "*", 0, 0
+                else:
+                    flag |= 32 if o["reverse"] else 0
+                    rnext = "=" if o["ref"] == a["ref"] else o["ref"]
+                    pnext = o["pos"] + 1
+                    tlen = 0
+                    if o["ref"] == a["ref"] and i == 0:
+                        lo, hi = min(a["pos"], o["pos"]), max(a["rend"], o["rend"])
+                        tlen = (hi - lo) if a["pos"] <= o["pos"] else -(hi - lo)
+                        if a["reverse"] != o["reverse"] and abs(tlen) < 3 * insert[0]:
+                            flag |= 2   # proper pair
+                fh.write(f"{qname}\t{flag}\t{a['ref']}\t{a['pos'] + 1}\t{a['mapq']}\t{a['cigar']}"
+                         f"\t{rnext}\t{pnext}\t{tlen}\t{a['seq']}\t*\n")
+
+
 def _cigar(seg):
     out, last, n = [], None, 0
     for op, _, _ in seg:
@@ -156,6 +193,10 @@ def simulate(outdir, seed=7, scale=1.0, hic_pairs=40000):
         with open(sam_path, "w") as fh:
             for n, s in contigs.items():
                 fh.write(f"@SQ\tSN:{n}\tLN:{len(s)}\n")
+            if plat == "illumina":
+                _write_pairs(fh, rng, genome, blocks, p, n_reads // 2, (0, G), "illumina_")
+                files[plat] = sam_path
+                continue
             for r in range(n_reads):
                 ln = rng.randint(*p["len"])
                 gs = rng.randint(0, max(0, G - ln))
@@ -260,6 +301,9 @@ def simulate_circular(outdir, seed=11, scale=0.5):
                 ext = mol * (2 + p["len"][1] // M)          # reads wrap the origin
                 copies = len(ext) // M
                 shifted = [(c, cs, gs + k * M, gl, ori) for k in range(-1, copies) for c, cs, gs, gl, ori in blocks]
+                if plat == "illumina":
+                    _write_pairs(fh, rng, ext, shifted, p, int(M * p["depth"] / 300), (0, M), f"illumina_{len(mol)}_")
+                    continue
                 for _ in range(int(M * p["depth"] / (sum(p["len"]) / 2))):
                     ln = rng.randint(*p["len"])
                     gs = rng.randrange(M)

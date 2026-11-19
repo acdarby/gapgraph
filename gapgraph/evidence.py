@@ -24,10 +24,11 @@ def _via_from_paths(graph, lr_paths):
     return via
 
 
-def build_candidates(graph, clip_joins, lr_joins, hic=None, lr_paths=()):
+def build_candidates(graph, clip_joins, lr_joins, hic=None, lr_paths=(), pair_joins=None):
     links = graph.link_keys()
     via = _via_from_paths(graph, lr_paths)
-    keys = set(links) | set(clip_joins) | set(lr_joins) | set(via)
+    pair_joins = pair_joins or {}
+    keys = set(links) | set(clip_joins) | set(lr_joins) | set(via) | set(pair_joins)
     if hic is not None:
         keys |= hic.candidate_keys()
     cands = []
@@ -39,6 +40,7 @@ def build_candidates(graph, clip_joins, lr_joins, hic=None, lr_paths=()):
         sc = clip_joins.get(key, {})
         lr = lr_joins.get(key, {})
         h = hic.score(key) if hic is not None else None
+        pj = pair_joins.get(key, {})
         c = {
             "id": f"{a}:{sa}~{b}:{sb}",
             "a": [a, sa], "b": [b, sb],
@@ -50,6 +52,8 @@ def build_candidates(graph, clip_joins, lr_joins, hic=None, lr_paths=()):
             "longread_reads": lr.get("reads", 0),
             "longread_gap": lr.get("gap"),
             "longread_platforms": lr.get("platforms", {}),
+            "pair_reads": pj.get("pairs", 0),
+            "pair_gap": pj.get("gap"),
             "hic_contacts": h["contacts"] if h else 0,
             "hic_norm": h["norm"] if h else 0.0,
             "hic_orient": h["orient_frac"] if h else 0.0,
@@ -61,15 +65,17 @@ def build_candidates(graph, clip_joins, lr_joins, hic=None, lr_paths=()):
         s += 3.0 if c["graph_link"] else 0.0
         s += 2.0 * math.log2(1 + max(c["longread_reads"], c["via_reads"]))
         s += 1.0 * math.log2(1 + c["softclip_reads"])
+        s += 1.5 * math.log2(1 + c["pair_reads"])
         if h and h["contacts"]:
             s += 6.0 * c["hic_norm"] * (0.5 + c["hic_orient"])
         c["score"] = round(s, 2)
-        gaps = [g for g in (c["longread_gap"], c["softclip_gap"]) if g is not None]
+        gaps = [g for g in (c["longread_gap"], c["softclip_gap"], c["pair_gap"]) if g is not None]
         c["gap"] = gaps[0] if gaps else (-c["graph_overlap"] if c["graph_overlap"] else 100)
         if c["via"]:
             c["gap"] = 0
         c["evidence"] = [n for n, v in (("graph", c["graph_link"]), ("longread", c["longread_reads"]),
-                                        ("softclip", c["softclip_reads"]), ("hic", c["hic_contacts"] >= 5),
+                                        ("softclip", c["softclip_reads"]), ("pairs", c["pair_reads"]),
+                                        ("hic", c["hic_contacts"] >= 5),
                                         ("path", c["via_reads"])) if v]
         cands.append(c)
     _flag(cands)

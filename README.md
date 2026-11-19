@@ -15,12 +15,15 @@ you curate it in a single view.
 | break contig | **break hotspots**: piles of reads clipping at the same column inside a contig (chimeras, repeat boundaries) |
 | repeats by hand | long-read **paths** through tangle nodes (X→R→Y). A join can carry a *copy* of the repeat |
 | database + undo | JSON project file with an undo stack and audit log. Alignments stay in their own (indexed) files |
+| Join Editor | one locked canvas: contig A's reads above its consensus, a **differences line**, contig B's consensus and reads below; Align + overlap length / % identity before committing |
+| consensus + "Search by ..." | quality-weighted consensus with per-column confidence; **Ctrl-S / Ctrl-R** jump to the next problem: low consensus quality, contig ≠ reads, excess discrepancies, second allele, low / high coverage |
+| Template Display / Find Read Pairs | whole-contig plot of every template at height = insert (or read) length, coloured by status (grey by MAPQ, **blue** unpaired, **orange** mate in another contig, **red** bad orientation, **green** wraps a circular end) + read/template depth; spanning pairs become join evidence |
 | output | FASTA + AGP 2.1 (gap evidence `proximity_ligation` for Hi-C-only joins) + edit log |
 
 ## Quick start (synthetic data with a known answer)
 
 ```bash
-pip install -e .            # pure Python; `pip install -e .[bam]` adds pysam for BAM/CRAM
+pip install -e .            # needs numpy; `pip install -e ".[bam]"` adds pysam for BAM/CRAM
 gapgraph simulate demo/
 gapgraph serve --gfa demo/assembly.gfa --aln illumina:demo/illumina.sam \
   --aln hifi:demo/hifi.sam --aln ont:demo/ont.sam --pairs demo/hic.pairs --project demo/project.json
@@ -98,10 +101,50 @@ Things to watch with real bacterial data:
 - Small plasmids can be shorter than the long reads, so a read may wrap the plasmid several times. These reads show up as repeated `plasmid+ -> plasmid+` paths, which is expected.
 - Polish after rotation and closing, not before: polishers handle the new origin best when it is far from a contig end.
 
+## The Gap5 tools, rebuilt
+
+These follow the Gap5 manual (Staden package Texinfo sources, `staden/trunk/doc/manual/gap5*.texi` in the Staden SourceForge repository), adapted to graph assemblies and mixed short- and long-read data.
+
+**Join Editor** (select a join; `a` or **Join…**)
+- In Gap5 the Join Editor is "a pair of contig editor displays stacked above one another… flipped in Y so that the consensus appears at the bottom… separated only by a differences line".
+- In gapgraph, contig A is oriented so its joining end sits at x = 0 and contig B starts at x = gap. Reads are reverse-complemented server-side when a contig is used on its minus strand, so both halves always scroll in register.
+- **Align** runs a banded alignment of the overlapping consensus sequences and prints a Gap5-style alignment.
+- **Join…** reports the overlap length, % identity, mismatches and indels before you commit.
+- Editing the gap box re-registers contig B live.
+
+**Consensus and problem search** (editor bar, or the **Problems** tab for all contigs)
+- Each read base adds evidence `ln((1−e)·3/e)` for its base (or `*` for a deletion), where e comes from the base quality, or from a per-platform default when there is none.
+- The consensus is the best-supported symbol. Its confidence is Q = −10·log10(1 − P(best)), capped at 100. On the consensus line, a darker background means lower confidence.
+- Search types:
+
+  | Type | Finds |
+  |---|---|
+  | `consq` | Q below the threshold (Gap5's default search, threshold 30) |
+  | `contig` | the contig base disagrees with the read consensus, including indels: unpolished errors |
+  | `discrep` | more disagreeing reads than the base qualities predict |
+  | `het` | a second allele, e.g. a mixed population or a collapsed repeat copy |
+  | `lowcov` | depth below the threshold |
+  | `highcov` | depth above N × the median. Collapsed rRNA operons and IS elements show up here; the manual notes "regions of extreme depth are often indication of misassemblies" |
+
+- The pileup is vectorised in numpy: 5.4 Mb of read bases takes about 0.3 s per contig, and results are cached.
+
+**Template display** (the **Template** tab above the editor, or `t`)
+- Gap5's template plot, with the same colour scheme and with Y = template size on a log scale. On that scale, 500 bp Illumina inserts and 10–30 kb long reads separate naturally, much as Gap5's "Stacking Y Size" separates short- from long-read data.
+- The shaded band is the library's normal insert range, estimated from the data.
+- The depth track underneath shows read depth and template depth.
+- Wheel to zoom, drag to pan, click to open the editor there.
+- Each read's strand marker in the editor uses Gap5's names-panel colours for pair status.
+
+**Read pairs as evidence**
+- The library insert size comes from FR pairs (median ± 4 robust SD).
+- Pairs whose mates sit in different contigs near the contig ends become join candidates (`pairs` evidence), with gap = insert − (distance of each read from its contig end).
+- Outward-facing pairs across the two ends of one contig are counted as circular "wrap" evidence.
+
 ## How the evidence is scored (`evidence.py`)
 
 - **graph link**: +3.
 - **long-read bridges**: consecutive hits on one read leave contig X through one end and enter contig Y through another. Score +2·log2(1+n). Gap = read distance minus the unaligned contig ends. A read that leaves mid-contig is counted as a conflict, not as support.
+- **read pairs**: mates in different contigs near the ends. Score +1.5·log2(1+n), with a gap estimate from the insert size.
 - **soft-clips**: each clip is oriented outward and k-mer matched against the inward sequence of every other end. A consistent diagonal gives the partner and the gap. Score +log2(1+n).
 - **Hi-C**: contacts are counted per contig-end pair. Score +6·share·(0.5+orientation fraction), where:
   - share = the geometric mean of the fraction of each end's contacts that go to the other end;
